@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"dbtool/internal/deps"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -51,6 +53,9 @@ Shell completion is set up automatically for bash, zsh, and fish.`,
 		fmt.Println("You can now run `dbtool` from anywhere.")
 
 		installCompletion()
+
+		deps.Offer("fzf", "dbtool uses it for an arrow-key/fuzzy-search picker in interactive prompts — without it, those prompts fall back to a plain numbered list.")
+
 		return nil
 	},
 }

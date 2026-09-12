@@ -120,3 +120,50 @@ func Require(tools ...string) {
 
 	logger.Info("successfully installed tools: %s", strings.Join(missing, ", "))
 }
+
+// Offer checks whether tool is on PATH and, if not, offers to install it
+// via the OS package manager — the same detection/install machinery as
+// Require, but for a nice-to-have rather than a hard requirement:
+// declining, a failed install, or not being able to suggest a command at
+// all is never fatal, it just leaves the tool missing. why is a short,
+// one-line reason shown alongside the offer so the user knows what
+// they'd get from installing it.
+func Offer(tool, why string) {
+	if _, err := exec.LookPath(tool); err == nil {
+		logger.Debug("optional tool found: %s", tool)
+		return
+	}
+
+	fmt.Printf("Tip: %s is not installed. %s\n", tool, why)
+
+	id := osID()
+	cmd, args := installCmd([]string{tool}, id)
+	if cmd == "" {
+		return
+	}
+
+	fmt.Printf("Suggested install command: %s %s\n", cmd, strings.Join(args, " "))
+	if !interactivelist.Confirm(fmt.Sprintf("Install %s now?", tool), false) {
+		return
+	}
+
+	logger.Info("installing optional tool: %s", tool)
+	installExec := exec.Command(cmd, args...)
+	installExec.Stdout = os.Stdout
+	installExec.Stderr = os.Stderr
+
+	if err := installExec.Run(); err != nil {
+		logger.Warn("optional tool %s failed to install: %v", tool, err)
+		fmt.Println("Installation failed:", err)
+		return
+	}
+
+	if _, err := exec.LookPath(tool); err != nil {
+		logger.Warn("optional tool %s still missing after install", tool)
+		fmt.Printf("%s still not found after install.\n", tool)
+		return
+	}
+
+	logger.Info("successfully installed optional tool: %s", tool)
+	fmt.Printf("%s installed.\n", tool)
+}

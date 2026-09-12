@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,10 +21,12 @@ func SendTestMessage(cfg settings.TelegramConfig) error {
 }
 
 // SendDump bundles every file in dumpDir into a tar archive, splits it into
-// chunks no larger than cfg.ChunkSizeBytes(), and delivers each chunk to
-// cfg.ChatID as a Telegram document via the bot identified by cfg.BotToken.
-// An initial text message announces the dump name, size, and part count so
-// the chunks can be identified and reassembled later
+// chunks no larger than cfg.ChunkSizeBytes(), and delivers them to cfg.ChatID
+// via the bot identified by cfg.BotToken: an initial HTML-formatted message
+// announces the dump name, size, and part count, then the chunks themselves
+// are sent grouped into albums of up to 10 (Telegram's per-group limit) so
+// they appear together as single blocks in the chat instead of as separate
+// messages, letting the reader identify and reassemble them later
 // (cat *.part* > dump.tar && tar -xf dump.tar).
 func SendDump(cfg settings.TelegramConfig, dumpDir string) error {
 	if !cfg.Enabled() {
@@ -44,11 +47,7 @@ func SendDump(cfg settings.TelegramConfig, dumpDir string) error {
 
 	logger.Info("telegram: sending %q as %d chunk(s) of up to %d bytes each", dumpName, total, chunkSize)
 
-	announcement := fmt.Sprintf(
-		"dbtool backup: %s\nSize: %.2f MB\nParts: %d\n\nReassemble with:\ncat %s.tar.part* > %s.tar && tar -xf %s.tar",
-		dumpName, float64(size)/(1024*1024), total, dumpName, dumpName, dumpName,
-	)
-	if err := sendMessage(cfg.BotToken, cfg.ChatID, announcement); err != nil {
+	if err := sendMessageHTML(cfg.BotToken, cfg.ChatID, announcementHTML(dumpName, size, total)); err != nil {
 		return fmt.Errorf("send announcement: %w", err)
 	}
 
@@ -58,24 +57,48 @@ func SendDump(cfg settings.TelegramConfig, dumpDir string) error {
 	}
 	defer f.Close()
 
+	docs := make([]documentUpload, total)
 	for i, r := range ranges {
-		partName := fmt.Sprintf("%s.tar.part%03d", dumpName, i+1)
-		caption := fmt.Sprintf("%s (part %d/%d)", dumpName, i+1, total)
-
-		section := io.NewSectionReader(f, r.Offset, r.Length)
-		newReader := func() (io.Reader, error) {
-			if _, err := section.Seek(0, io.SeekStart); err != nil {
-				return nil, err
-			}
-			return section, nil
+		r := r
+		docs[i] = documentUpload{
+			filename: fmt.Sprintf("%s.tar.part%03d", dumpName, i+1),
+			caption:  fmt.Sprintf("%s (part %d/%d)", dumpName, i+1, total),
+			newReader: func() (io.Reader, error) {
+				return io.NewSectionReader(f, r.Offset, r.Length), nil
+			},
 		}
+	}
 
-		fmt.Printf("Sending %s to Telegram (%d/%d)...\n", partName, i+1, total)
-		if err := sendDocument(cfg.BotToken, cfg.ChatID, newReader, partName, caption); err != nil {
-			return fmt.Errorf("send chunk %d/%d: %w", i+1, total, err)
+	for start := 0; start < total; start += maxMediaGroupItems {
+		end := min(start+maxMediaGroupItems, total)
+		batch := docs[start:end]
+
+		fmt.Printf("Sending parts %d-%d/%d to Telegram...\n", start+1, end, total)
+
+		var sendErr error
+		if len(batch) == 1 {
+			sendErr = sendDocument(cfg.BotToken, cfg.ChatID, batch[0])
+		} else {
+			sendErr = sendMediaGroup(cfg.BotToken, cfg.ChatID, batch)
+		}
+		if sendErr != nil {
+			return fmt.Errorf("send parts %d-%d/%d: %w", start+1, end, total, sendErr)
 		}
 	}
 
 	logger.Info("telegram: finished sending %q (%d chunk(s))", dumpName, total)
 	return nil
+}
+
+// announcementHTML builds the Telegram-HTML (parse_mode=HTML) announcement
+// message describing dumpName's size and part count, plus the shell command
+// to reassemble the parts once downloaded.
+func announcementHTML(dumpName string, size int64, total int) string {
+	name := html.EscapeString(dumpName)
+	reassemble := html.EscapeString(fmt.Sprintf("cat %s.tar.part* > %s.tar && tar -xf %s.tar", dumpName, dumpName, dumpName))
+
+	return fmt.Sprintf(
+		"📦 <b>dbtool backup</b>\n<b>Name:</b> <code>%s</code>\n<b>Size:</b> %.2f MB\n<b>Parts:</b> %d\n\n<b>Reassemble with:</b>\n<pre>%s</pre>",
+		name, float64(size)/(1024*1024), total, reassemble,
+	)
 }

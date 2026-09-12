@@ -26,13 +26,20 @@ func fzfAvailable() bool {
 // piped in and the result is read back from stdout.
 //
 // Each option is sent as "<index>\t<text>" so fzf can hand back which item
-// was chosen by index — via --with-nth/--accept-nth — regardless of
-// duplicate display text. --height=~100% is the key piece: it renders fzf
-// inline, sized to the input (never exceeding the terminal), instead of
-// swapping the whole terminal into an alternate full-screen buffer the way
-// a plain --height-less picker does. That swap-and-restore is what made
-// the picker feel like a jarring jump next to dbtool's plain text prompts;
-// sizing to content and staying inline removes it.
+// was chosen by index regardless of duplicate display text: --with-nth
+// only changes what's shown/matched against, while the line fzf prints on
+// accept is still the original "<index>\t<text>" — so the index is parsed
+// back out of that in Go (see the field.Cut below) instead of asking fzf
+// to do the extraction via --accept-nth, which isn't available in the
+// older fzf versions still shipped by several Linux distros' package
+// managers; --delimiter/--with-nth have existed since fzf's earliest
+// releases, so this works everywhere. --height=~100% is the other key
+// piece: it renders fzf inline, sized to the input (never exceeding the
+// terminal), instead of swapping the whole terminal into an alternate
+// full-screen buffer the way a plain --height-less picker does. That
+// swap-and-restore is what made the picker feel like a jarring jump next
+// to dbtool's plain text prompts; sizing to content and staying inline
+// removes it.
 func runFzf(prompt string, options []string, multi bool, preselected PreselectedFunc) ([]int, error) {
 	args := []string{
 		"--height=~100%",
@@ -40,7 +47,6 @@ func runFzf(prompt string, options []string, multi bool, preselected Preselected
 		"--prompt=" + prompt + "> ",
 		"--delimiter=\t",
 		"--with-nth=2",
-		"--accept-nth=1",
 	}
 
 	if multi {
@@ -78,7 +84,8 @@ func runFzf(prompt string, options []string, multi bool, preselected Preselected
 		if line == "" {
 			continue
 		}
-		idx, convErr := strconv.Atoi(line)
+		field, _, _ := strings.Cut(line, "\t")
+		idx, convErr := strconv.Atoi(field)
 		if convErr != nil {
 			continue
 		}

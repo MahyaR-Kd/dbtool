@@ -72,7 +72,11 @@ func withFakeFzf(t *testing.T, stdoutContent string, exitCode int) (argsFile, st
 }
 
 func TestRunFzf_SendsIndexedOptionsAndParsesSelection(t *testing.T) {
-	argsFile, stdinFile := withFakeFzf(t, "1\n", 0)
+	// Real fzf's default output on accept is the full original line, not
+	// just the index — --with-nth only changes what's displayed/matched,
+	// not what's printed back. runFzf must parse the index back out of
+	// this itself (see the comment on --accept-nth in fzf.go).
+	argsFile, stdinFile := withFakeFzf(t, "1\tbeta\n", 0)
 
 	idxs, err := runFzf("Pick", []string{"alpha", "beta", "gamma"}, false, nil)
 	if err != nil {
@@ -95,7 +99,7 @@ func TestRunFzf_SendsIndexedOptionsAndParsesSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read args capture: %v", err)
 	}
-	for _, want := range []string{"--height=~100%", "--prompt=Pick> ", "--delimiter=\t", "--with-nth=2", "--accept-nth=1"} {
+	for _, want := range []string{"--height=~100%", "--prompt=Pick> ", "--delimiter=\t", "--with-nth=2"} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("fzf args missing %q, got: %s", want, args)
 		}
@@ -103,10 +107,17 @@ func TestRunFzf_SendsIndexedOptionsAndParsesSelection(t *testing.T) {
 	if strings.Contains(string(args), "--multi") {
 		t.Errorf("single-select must not pass --multi, got: %s", args)
 	}
+	// --accept-nth isn't available in the older fzf versions some Linux
+	// package managers still ship (this broke on a real machine once
+	// already) — the index is parsed from fzf's default full-line output
+	// instead, so this flag must never come back.
+	if strings.Contains(string(args), "--accept-nth") {
+		t.Errorf("must not pass --accept-nth (unsupported by older fzf versions), got: %s", args)
+	}
 }
 
 func TestRunFzf_PrintsAnswerAfterSelection(t *testing.T) {
-	withFakeFzf(t, "1\n", 0)
+	withFakeFzf(t, "1\tbeta\n", 0)
 
 	var idxs []int
 	var err error
@@ -130,7 +141,7 @@ func TestRunFzf_PrintsAnswerAfterSelection(t *testing.T) {
 }
 
 func TestRunFzf_MultiSelectPrintsCommaJoinedAnswer(t *testing.T) {
-	withFakeFzf(t, "0\n2\n", 0)
+	withFakeFzf(t, "0\talpha\n2\tgamma\n", 0)
 
 	out := captureStdout(t, func() {
 		_, _ = runFzf("Pick", []string{"alpha", "beta", "gamma"}, true, nil)
@@ -141,7 +152,7 @@ func TestRunFzf_MultiSelectPrintsCommaJoinedAnswer(t *testing.T) {
 }
 
 func TestRunFzf_MultiSelectPassesFlagAndParsesMultipleLines(t *testing.T) {
-	argsFile, _ := withFakeFzf(t, "0\n2\n", 0)
+	argsFile, _ := withFakeFzf(t, "0\talpha\n2\tgamma\n", 0)
 
 	idxs, err := runFzf("Pick", []string{"alpha", "beta", "gamma"}, true, nil)
 	if err != nil {
@@ -158,7 +169,7 @@ func TestRunFzf_MultiSelectPassesFlagAndParsesMultipleLines(t *testing.T) {
 }
 
 func TestRunFzf_PreselectedBuildsStartBind(t *testing.T) {
-	argsFile, _ := withFakeFzf(t, "1\n", 0)
+	argsFile, _ := withFakeFzf(t, "1\tbeta\n", 0)
 
 	preselected := func(i int) bool { return i == 0 || i == 2 }
 	_, err := runFzf("Pick", []string{"alpha", "beta", "gamma"}, true, preselected)

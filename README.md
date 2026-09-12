@@ -597,4 +597,4 @@ instead:
 
 ## License
 
-No `LICENSE` file is currently checked into this repository.
+MIT — see [LICENSE](LICENSE) for details.

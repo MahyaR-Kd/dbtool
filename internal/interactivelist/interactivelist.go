@@ -1,24 +1,15 @@
-// Package interactivelist provides an fzf-like, arrow-key-driven picker for
-// choosing one or more items from a list — built into the dbtool binary via
-// github.com/ktr0731/go-fuzzyfinder, so no external fzf install is needed.
+// Package interactivelist provides an arrow-key/fuzzy-search picker for
+// choosing one or more items from a list, by driving the real fzf binary
+// (see fzf.go) as a subprocess with --height so it renders inline — sized
+// to the list, never swapping the terminal into a full-screen alternate
+// buffer the way a plain fullscreen picker does. That swap-and-restore is
+// what made earlier attempts (an embedded picker library with no height
+// option) feel like a jarring jump next to dbtool's plain text prompts.
 //
 // When stdin/stdout aren't an interactive terminal (piped input, scripts,
-// automation), a full-screen picker has nothing to draw on, so both
-// SelectOne and SelectMulti fall back to the classic "print a numbered
-// list, type a number" prompt instead.
-//
-// Note: go-fuzzyfinder always renders using the entire current terminal
-// height — there is no option to cap it (checked its full option list:
-// WithMode, WithPreviewWindow, WithHotReload(Lock), WithCursorPosition,
-// WithPromptString, WithHeader, WithContext, WithQuery, WithSelectOne,
-// WithPreselected — nothing sizes the picker). It anchors the list to the
-// bottom rows and leaves everything above blank, so on a tall terminal
-// window a short list leaves a large empty gap above it. Two upstream
-// feature requests ask for exactly this (github.com/ktr0731/go-fuzzyfinder
-// issues #261 and #134), both open/unresolved as of this writing. This is
-// a known cosmetic side effect, not a bug — kept as-is deliberately,
-// preferring the picker's arrow-key/fuzzy-search UX at every list length
-// over avoiding the gap.
+// automation) or fzf isn't installed, SelectOne and SelectMulti fall back
+// to the classic "print a numbered list, type a number" prompt instead —
+// fzf is a UX nicety here, never a hard requirement to run dbtool.
 package interactivelist
 
 import (
@@ -31,7 +22,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ktr0731/go-fuzzyfinder"
 	"golang.org/x/term"
 )
 
@@ -53,48 +43,116 @@ func SelectOne(prompt string, options []string) (int, error) {
 		return 0, errors.New("no options to select from")
 	}
 
-	if !isInteractiveTerminal() {
+	if !isInteractiveTerminal() || !fzfAvailable() {
 		return selectOneFallback(os.Stdin, prompt, options)
 	}
 
-	idx, err := fuzzyfinder.Find(options, func(i int) string { return options[i] },
-		fuzzyfinder.WithPromptString(prompt+"> "))
+	idxs, err := runFzf(prompt, options, false, nil)
 	if err != nil {
-		if errors.Is(err, fuzzyfinder.ErrAbort) {
-			return 0, ErrCanceled
-		}
 		return 0, err
 	}
-	return idx, nil
+	return idxs[0], nil
 }
 
 // SelectMulti presents options under prompt with Tab to toggle a
-// selection and Enter to confirm (matching fzf -m), and returns the chosen
-// indices (0-based), sorted ascending. A nil, non-error result means
-// nothing was selected. preselected may be nil (nothing pre-checked).
+// selection and Enter to confirm, and returns the chosen indices
+// (0-based), sorted ascending. A nil, non-error result means nothing was
+// selected. preselected may be nil (nothing pre-checked).
 func SelectMulti(prompt string, options []string, preselected PreselectedFunc) ([]int, error) {
 	if len(options) == 0 {
 		return nil, nil
 	}
 
-	if !isInteractiveTerminal() {
+	if !isInteractiveTerminal() || !fzfAvailable() {
 		return selectMultiFallback(os.Stdin, prompt, options, preselected)
 	}
 
-	opts := []fuzzyfinder.Option{fuzzyfinder.WithPromptString(prompt + "> ")}
-	if preselected != nil {
-		opts = append(opts, fuzzyfinder.WithPreselected(func(i int) bool { return preselected(i) }))
-	}
-
-	idxs, err := fuzzyfinder.FindMulti(options, func(i int) string { return options[i] }, opts...)
+	idxs, err := runFzf(prompt, options, true, preselected)
 	if err != nil {
-		if errors.Is(err, fuzzyfinder.ErrAbort) {
-			return nil, ErrCanceled
-		}
 		return nil, err
 	}
 	sort.Ints(idxs)
 	return idxs, nil
+}
+
+// Confirm asks a yes/no question as a plain typed "(y/N)" / "(Y/n)" line,
+// styled like every other text prompt (see PromptLabel) — deliberately
+// NOT the full-screen arrow-key picker SelectOne uses. A full-screen
+// picker for a plain yes/no answer felt like a jarring visual jump next
+// to the surrounding inline text prompts, so booleans stay a simple typed
+// answer instead; the arrow-key picker is reserved for actual lists.
+// defaultYes is used when the line is empty or unparseable, so callers
+// get a plain bool with no error to handle.
+func Confirm(prompt string, defaultYes bool) bool {
+	return confirmText(os.Stdin, prompt, defaultYes)
+}
+
+func confirmText(r io.Reader, prompt string, defaultYes bool) bool {
+	suffix := "(y/N)"
+	if defaultYes {
+		suffix = "(Y/n)"
+	}
+	marker := style(ansiCyan+ansiBold, "?")
+	label := style(ansiBold, prompt)
+	fmt.Printf("%s %s %s: ", marker, label, style(ansiDim, suffix))
+
+	reader := bufio.NewReader(r)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	if line == "" {
+		return defaultYes
+	}
+	return line == "y" || line == "yes"
+}
+
+// ANSI styling shared by every plain text prompt in dbtool, so a typed
+// field doesn't look out of place next to the full-screen arrow-key
+// picker. Disabled automatically when stdout isn't a real terminal, so
+// piped output and test fixtures never see raw escape codes.
+const (
+	ansiReset = "\033[0m"
+	ansiBold  = "\033[1m"
+	ansiCyan  = "\033[36m"
+	ansiDim   = "\033[2m"
+)
+
+func styleEnabled() bool {
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+func style(code, s string) string {
+	if !styleEnabled() {
+		return s
+	}
+	return code + s + ansiReset
+}
+
+// PromptLabel renders label in the style shared by every prompt in
+// dbtool: a cyan "?" marker and a bold label. If current is non-empty,
+// it's appended dimmed in brackets as the value Enter will keep — the
+// same convention the arrow-key picker uses for a pre-selected item.
+func PromptLabel(label, current string) string {
+	marker := style(ansiCyan+ansiBold, "?")
+	l := style(ansiBold, label)
+	if current != "" {
+		return fmt.Sprintf("%s %s %s: ", marker, l, style(ansiDim, "["+current+"]"))
+	}
+	return fmt.Sprintf("%s %s: ", marker, l)
+}
+
+// Text prompts for a free-text value under label, styled via PromptLabel,
+// reading a line from r. If current is non-empty, pressing Enter with no
+// input keeps it. r is read from directly (no reader of its own), so
+// callers can thread one shared *bufio.Reader through a whole sequence of
+// prompts without losing buffered-ahead input between calls.
+func Text(r *bufio.Reader, label, current string) string {
+	fmt.Print(PromptLabel(label, current))
+	line, _ := r.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return current
+	}
+	return line
 }
 
 func isInteractiveTerminal() bool {

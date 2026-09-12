@@ -1,6 +1,7 @@
 package interactivelist
 
 import (
+	"bufio"
 	"errors"
 	"strings"
 	"testing"
@@ -103,6 +104,56 @@ func TestSelectMultiFallback_ExplicitInputOverridesPreselected(t *testing.T) {
 	want := []int{2} // gamma — the user's explicit choice replaces the preselection
 	if len(got) != len(want) || got[0] != want[0] {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestConfirmText(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		defaultYes bool
+		want       bool
+	}{
+		{"empty input keeps default true", "\n", true, true},
+		{"empty input keeps default false", "\n", false, false},
+		{"y overrides default false", "y\n", false, true},
+		{"yes overrides default false", "yes\n", false, true},
+		{"n overrides default true", "n\n", true, false},
+		{"case insensitive", "Y\n", false, true},
+		{"unrecognized input treated as no", "maybe\n", true, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := confirmText(strings.NewReader(tc.input), "Continue?", tc.defaultYes)
+			if got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestText(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		current string
+		want    string
+	}{
+		{"empty input keeps current", "\n", "old", "old"},
+		{"typed value overrides current", "new\n", "old", "new"},
+		{"whitespace trimmed", "  new  \n", "old", "new"},
+		{"no current, empty input stays empty", "\n", "", ""},
+		{"no current, typed value used", "value\n", "", "value"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Text(bufio.NewReader(strings.NewReader(tc.input)), "Label", tc.current)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

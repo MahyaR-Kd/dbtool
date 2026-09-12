@@ -76,22 +76,17 @@ go install github.com/MahyaR-Kd/dbtool@latest
 
 Every "pick one from a list" prompt (selecting a config, a job, a dump
 directory, which schemas/tables to include or ignore, ...) opens an
-fzf-like picker: arrow keys (or type to fuzzy-filter) to navigate, Tab to
-toggle a selection where multiple picks are allowed, Enter to confirm, Esc
-to cancel. It's built into the `dbtool` binary — no separate `fzf` install
-needed. When stdin isn't an interactive terminal (piping input from a
-script), it automatically falls back to a compact numbered list — type the
-number (or, for a multi-select prompt, comma-separated numbers) and press
-Enter — so scripted/automated use is unaffected.
-
-One cosmetic note: the picker library always renders using the *entire*
-current terminal height, with no option to constrain it — on a tall
-terminal window, a short list (a couple of configs, say) ends up with a
-large empty gap above it. That's a limitation of the underlying library,
-not a dbtool bug — two upstream feature requests ask for a height option
-([#261](https://github.com/ktr0731/go-fuzzyfinder/issues/261),
-[#134](https://github.com/ktr0731/go-fuzzyfinder/issues/134)), both open.
-Selection, arrow keys, and fuzzy search all work correctly regardless.
+[fzf](https://github.com/junegunn/fzf) picker: arrow keys (or type to
+fuzzy-filter) to navigate, Tab to toggle a selection where multiple picks
+are allowed, Enter to confirm, Esc to cancel. This requires the real `fzf`
+binary on your `PATH` (`brew install fzf` / `apt install fzf` / etc.) —
+dbtool drives it with `--height` so it renders inline, sized to the list,
+instead of taking over the whole terminal the way a full-screen picker
+would. When `fzf` isn't installed, or stdin isn't an interactive terminal
+(piping input from a script), prompts automatically fall back to a compact
+numbered list — type the number (or, for a multi-select prompt,
+comma-separated numbers) and press Enter — so dbtool works either way and
+scripted/automated use is unaffected.
 
 ### Manage connection configs
 
@@ -507,7 +502,7 @@ preventing accidental use of an unmanaged copy against real data.
 | `secret` | AES-256-GCM encryption with a local auto-generated key — protects job passwords, S3 keys, the proxy password, and the Telegram token; no human interaction needed, so scheduled jobs keep working unattended |
 | `credvault` | A second, separate encryption scheme gated by a user-chosen master password — protects only the optional DB password saved on a connection config, since that's only ever needed for a dump/restore a human runs directly |
 | `secureinput` | Masked (`*`-echoing) password prompts, with an env-var/flag resolution cascade and a plain-line fallback when stdin isn't a terminal |
-| `interactivelist` | The fzf-like arrow-key picker (wraps `go-fuzzyfinder`), with the same non-terminal fallback to a numbered list |
+| `interactivelist` | Drives the real `fzf` binary for the arrow-key/fuzzy picker, with a plain numbered-list fallback when `fzf` is missing or stdin isn't a terminal |
 | `progress` | Parses `mydumper`/`myloader`'s verbose stderr output to drive a real progress bar instead of a spinner |
 | `deps` | Detects missing `mydumper`/`myloader`/`mysql` and offers to install them via the OS package manager |
 | `logger` | Leveled file logging to `dbtool.log` |

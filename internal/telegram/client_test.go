@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"encoding/json"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -120,100 +119,6 @@ func TestSendDocument_UploadsSingleFile(t *testing.T) {
 	}
 	if gotContent != "chunk-bytes" {
 		t.Errorf("content = %q, want chunk-bytes", gotContent)
-	}
-}
-
-func TestSendMediaGroup_GroupsFilesInOneRequest(t *testing.T) {
-	var requestCount int
-	type mediaEntry struct {
-		Type    string `json:"type"`
-		Media   string `json:"media"`
-		Caption string `json:"caption"`
-	}
-	var gotMedia []mediaEntry
-	gotFiles := map[string]string{}
-
-	withTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
-		_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil {
-			t.Fatalf("parse content type: %v", err)
-		}
-		mr := multipart.NewReader(r.Body, params["boundary"])
-		for {
-			part, err := mr.NextPart()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				t.Fatalf("next part: %v", err)
-			}
-			data, _ := io.ReadAll(part)
-			switch {
-			case part.FormName() == "media":
-				if err := json.Unmarshal(data, &gotMedia); err != nil {
-					t.Fatalf("unmarshal media: %v", err)
-				}
-			case part.FileName() != "":
-				gotFiles[part.FormName()] = string(data)
-			}
-		}
-		okResponse(w)
-	})
-
-	docs := []documentUpload{
-		{filename: "dump.tar.part001", caption: "dump (part 1/3)", newReader: staticReader("part1")},
-		{filename: "dump.tar.part002", caption: "dump (part 2/3)", newReader: staticReader("part2")},
-		{filename: "dump.tar.part003", caption: "dump (part 3/3)", newReader: staticReader("part3")},
-	}
-	if err := sendMediaGroup("tok", "chat1", docs); err != nil {
-		t.Fatalf("sendMediaGroup: %v", err)
-	}
-
-	// The whole point of grouping: all 3 files travel in exactly one HTTP
-	// request instead of 3 separate sendDocument calls/messages.
-	if requestCount != 1 {
-		t.Fatalf("requestCount = %d, want 1 (all parts grouped into a single request)", requestCount)
-	}
-	if len(gotMedia) != 3 {
-		t.Fatalf("media entries = %d, want 3", len(gotMedia))
-	}
-	for i, m := range gotMedia {
-		if m.Type != "document" {
-			t.Errorf("media[%d].Type = %q, want document", i, m.Type)
-		}
-		if !strings.HasPrefix(m.Media, "attach://") {
-			t.Errorf("media[%d].Media = %q, want attach:// prefix", i, m.Media)
-		}
-		field := strings.TrimPrefix(m.Media, "attach://")
-		if gotFiles[field] == "" {
-			t.Errorf("no uploaded file found for field %q referenced by media[%d]", field, i)
-		}
-	}
-	if gotMedia[1].Caption != "dump (part 2/3)" {
-		t.Errorf("media[1].Caption = %q, want %q", gotMedia[1].Caption, "dump (part 2/3)")
-	}
-}
-
-func TestSendMediaGroup_RejectsInvalidCount(t *testing.T) {
-	tests := []struct {
-		name string
-		n    int
-	}{
-		{"zero items", 0},
-		{"one item", 1},
-		{"eleven items", 11},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			docs := make([]documentUpload, tc.n)
-			for i := range docs {
-				docs[i] = documentUpload{filename: "f", newReader: staticReader("x")}
-			}
-			if err := sendMediaGroup("tok", "chat1", docs); err == nil {
-				t.Errorf("expected an error for %d documents", tc.n)
-			}
-		})
 	}
 }
 

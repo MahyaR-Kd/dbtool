@@ -23,11 +23,19 @@ func SendTestMessage(cfg settings.TelegramConfig) error {
 // SendDump bundles every file in dumpDir into a tar archive, splits it into
 // chunks no larger than cfg.ChunkSizeBytes(), and delivers them to cfg.ChatID
 // via the bot identified by cfg.BotToken: an initial HTML-formatted message
-// announces the dump name, size, and part count, then the chunks themselves
-// are sent grouped into albums of up to 10 (Telegram's per-group limit) so
-// they appear together as single blocks in the chat instead of as separate
-// messages, letting the reader identify and reassemble them later
+// announces the dump name, size, and part count, then each chunk is sent as
+// its own document so the reader can identify and reassemble them later
 // (cat *.part* > dump.tar && tar -xf dump.tar).
+//
+// Chunks are sent one document per message, not grouped into a Telegram
+// "album" (sendMediaGroup): that was tried, but the hosted Bot API caps the
+// *combined* multipart body of a single request at roughly the same ~50MB
+// it caps one file at — so bundling even two chunks anywhere near
+// cfg.ChunkSizeBytes()'s default (49MB) into one album request reliably
+// fails with 413 Request Entity Too Large. Since dbtool's whole point in
+// chunking is to use large chunks (fewer parts, matching Telegram's own
+// per-file limit), grouping raw uploads this way isn't viable at a
+// meaningful chunk size, so each chunk goes out as an independent request.
 func SendDump(cfg settings.TelegramConfig, dumpDir string) error {
 	if !cfg.Enabled() {
 		return fmt.Errorf("telegram is not configured")
@@ -57,32 +65,22 @@ func SendDump(cfg settings.TelegramConfig, dumpDir string) error {
 	}
 	defer f.Close()
 
-	docs := make([]documentUpload, total)
 	for i, r := range ranges {
-		r := r
-		docs[i] = documentUpload{
-			filename: fmt.Sprintf("%s.tar.part%03d", dumpName, i+1),
-			caption:  fmt.Sprintf("%s (part %d/%d)", dumpName, i+1, total),
-			newReader: func() (io.Reader, error) {
-				return io.NewSectionReader(f, r.Offset, r.Length), nil
-			},
+		partName := fmt.Sprintf("%s.tar.part%03d", dumpName, i+1)
+		caption := fmt.Sprintf("%s (part %d/%d)", dumpName, i+1, total)
+
+		section := io.NewSectionReader(f, r.Offset, r.Length)
+		newReader := func() (io.Reader, error) {
+			if _, err := section.Seek(0, io.SeekStart); err != nil {
+				return nil, err
+			}
+			return section, nil
 		}
-	}
 
-	for start := 0; start < total; start += maxMediaGroupItems {
-		end := min(start+maxMediaGroupItems, total)
-		batch := docs[start:end]
-
-		fmt.Printf("Sending parts %d-%d/%d to Telegram...\n", start+1, end, total)
-
-		var sendErr error
-		if len(batch) == 1 {
-			sendErr = sendDocument(cfg.BotToken, cfg.ChatID, batch[0])
-		} else {
-			sendErr = sendMediaGroup(cfg.BotToken, cfg.ChatID, batch)
-		}
-		if sendErr != nil {
-			return fmt.Errorf("send parts %d-%d/%d: %w", start+1, end, total, sendErr)
+		fmt.Printf("Sending %s to Telegram (%d/%d)...\n", partName, i+1, total)
+		doc := documentUpload{filename: partName, caption: caption, newReader: newReader}
+		if err := sendDocument(cfg.BotToken, cfg.ChatID, doc); err != nil {
+			return fmt.Errorf("send chunk %d/%d: %w", i+1, total, err)
 		}
 	}
 

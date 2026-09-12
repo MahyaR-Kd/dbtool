@@ -175,6 +175,22 @@ func exclusionPatterns(ignoredSchemas []string, ignoredTables map[string][]strin
 	return exclusions
 }
 
+// redactPasswordArg returns a copy of a mydumper/myloader argv (built with
+// the "-p", "<password>" pair used throughout this package) with the
+// password value replaced by a fixed placeholder, so logging the command
+// line for debugging never writes a plaintext DB password to the log
+// file.
+func redactPasswordArg(args []string) []string {
+	redacted := make([]string, len(args))
+	copy(redacted, args)
+	for i, a := range redacted {
+		if a == "-p" && i+1 < len(redacted) {
+			redacted[i+1] = "****"
+		}
+	}
+	return redacted
+}
+
 func RunDump(cfg types.Config, pass string) string {
 
 	logger.Info("starting dump for config %q (host=%s port=%s user=%s)", cfg.Name, cfg.Host, cfg.Port, cfg.User)
@@ -240,7 +256,7 @@ func RunDump(cfg types.Config, pass string) string {
 	}
 
 	cmd := exec.Command(mydumperPath, args...)
-	logger.Debug("dump command: %s", strings.Join(cmd.Args, " "))
+	logger.Debug("dump command: %s %s", mydumperPath, strings.Join(redactPasswordArg(args), " "))
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
 

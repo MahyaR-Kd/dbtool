@@ -35,6 +35,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
+	"dbtool/internal/interactivelist"
 	"dbtool/internal/paths"
 	"dbtool/internal/secureinput"
 )
@@ -190,7 +191,7 @@ func setup() ([]byte, error) {
 // deliberate change of an existing password read very differently).
 func createNewPassword() ([]byte, error) {
 	for {
-		p1, err := readPasswordFunc("Create a master password: ")
+		p1, err := readPasswordFunc(interactivelist.PromptLabel("Create a master password", ""))
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +199,7 @@ func createNewPassword() ([]byte, error) {
 			fmt.Println("Master password cannot be empty.")
 			continue
 		}
-		p2, err := readPasswordFunc("Confirm master password: ")
+		p2, err := readPasswordFunc(interactivelist.PromptLabel("Confirm master password", ""))
 		if err != nil {
 			return nil, err
 		}
@@ -278,7 +279,7 @@ func unlock() ([]byte, error) {
 
 	const maxAttempts = 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		pass, err := readPasswordFunc("Master password: ")
+		pass, err := readPasswordFunc(interactivelist.PromptLabel("Master password", ""))
 		if err != nil {
 			return nil, err
 		}

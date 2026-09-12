@@ -1,13 +1,12 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"os"
-	"strings"
 
 	"dbtool/internal/config"
 	"dbtool/internal/credvault"
+	"dbtool/internal/interactivelist"
 
 	"github.com/spf13/cobra"
 )
@@ -62,11 +61,7 @@ to the master password.`,
 
 		if !masterPasswordResetForce {
 			fmt.Println("This will permanently clear the saved password on every config that has one.")
-			fmt.Print("Continue? (y/n): ")
-			reader := bufio.NewReader(os.Stdin)
-			ans, _ := reader.ReadString('\n')
-			ans = strings.TrimSpace(strings.ToLower(ans))
-			if ans != "y" && ans != "yes" {
+			if !interactivelist.Confirm("Continue?", false) {
 				fmt.Println("Aborted.")
 				return
 			}

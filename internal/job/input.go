@@ -4,10 +4,14 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strings"
 
+	"dbtool/internal/interactivelist"
 	"dbtool/internal/secureinput"
 )
+
+// jobTypes lists every valid job Type value, in the order offered by the
+// arrow-key picker.
+var jobTypes = []string{"dump", "restore", "sync"}
 
 // AskInteractive prompts the user to fill in a new JobConfig interactively.
 func AskInteractive() Config {
@@ -15,52 +19,63 @@ func AskInteractive() Config {
 
 	j := Config{}
 
-	fmt.Print("Job Name: ")
-	j.Name = readLine(reader)
-
-	fmt.Print("Type (dump/restore/sync): ")
-	j.Type = readLine(reader)
-
-	fmt.Print("Schedule (cron expression, e.g. \"0 2 * * *\"): ")
-	j.Schedule = readLine(reader)
+	j.Name = interactivelist.Text(reader, "Job Name", "")
+	j.Type = selectJobType("")
+	j.Schedule = interactivelist.Text(reader, "Schedule (cron expression, e.g. \"0 2 * * *\")", "")
 
 	switch j.Type {
 	case "dump":
-		fmt.Print("Source Config Name (saved DB config to dump from): ")
-		j.SrcConfigName = readLine(reader)
-		j.SrcPassword = askPassword("Source DB Password: ")
+		j.SrcConfigName = interactivelist.Text(reader, "Source Config Name (saved DB config to dump from)", "")
+		j.SrcPassword = askPassword("Source DB Password")
 
 	case "restore":
-		fmt.Print("Destination Config Name (saved DB config to restore into): ")
-		j.DstConfigName = readLine(reader)
-		j.DstPassword = askPassword("Destination DB Password: ")
-		fmt.Print("Source Config Name (used to find latest dump folder, e.g. the name of the source DB config): ")
-		j.SrcConfigName = readLine(reader)
-		fmt.Print("Overwrite existing tables? (y/N): ")
-		j.OverwriteTables = strings.ToLower(readLine(reader)) == "y"
+		j.DstConfigName = interactivelist.Text(reader, "Destination Config Name (saved DB config to restore into)", "")
+		j.DstPassword = askPassword("Destination DB Password")
+		j.SrcConfigName = interactivelist.Text(reader, "Source Config Name (used to find latest dump folder, e.g. the name of the source DB config)", "")
+		j.OverwriteTables = interactivelist.Confirm("Overwrite existing tables?", false)
 
 	case "sync":
-		fmt.Print("Source Config Name (saved DB config to dump from): ")
-		j.SrcConfigName = readLine(reader)
-		j.SrcPassword = askPassword("Source DB Password: ")
-		fmt.Print("Destination Config Name (saved DB config to restore into): ")
-		j.DstConfigName = readLine(reader)
-		j.DstPassword = askPassword("Destination DB Password: ")
-		fmt.Print("Overwrite existing tables? (y/N): ")
-		j.OverwriteTables = strings.ToLower(readLine(reader)) == "y"
+		j.SrcConfigName = interactivelist.Text(reader, "Source Config Name (saved DB config to dump from)", "")
+		j.SrcPassword = askPassword("Source DB Password")
+		j.DstConfigName = interactivelist.Text(reader, "Destination Config Name (saved DB config to restore into)", "")
+		j.DstPassword = askPassword("Destination DB Password")
+		j.OverwriteTables = interactivelist.Confirm("Overwrite existing tables?", false)
 
 	default:
-		fmt.Println("Unknown type. Use dump, restore, or sync.")
+		fmt.Println("Type selection canceled — no type set.")
 	}
 
 	return j
 }
 
+// selectJobType offers jobTypes through the arrow-key picker, ordered so
+// current (if it's a known type) starts on top — matching the "press
+// Enter to keep it" feel of every other field. Canceling keeps current.
+func selectJobType(current string) string {
+	options := jobTypes
+	if current != "" {
+		reordered := make([]string, 0, len(jobTypes))
+		reordered = append(reordered, current)
+		for _, t := range jobTypes {
+			if t != current {
+				reordered = append(reordered, t)
+			}
+		}
+		options = reordered
+	}
+
+	idx, err := interactivelist.SelectOne("Type", options)
+	if err != nil {
+		return current
+	}
+	return options[idx]
+}
+
 // askPassword prompts for a password with masked (starred) input. On error
 // (e.g. Ctrl+C) it reports the problem and returns an empty password rather
 // than aborting the whole interactive flow.
-func askPassword(prompt string) string {
-	pass, err := secureinput.ReadPassword(prompt)
+func askPassword(label string) string {
+	pass, err := secureinput.ReadPassword(interactivelist.PromptLabel(label, ""))
 	if err != nil {
 		fmt.Println("Error reading password:", err)
 		return ""
@@ -73,70 +88,42 @@ func askPassword(prompt string) string {
 func EditInteractive(j Config) Config {
 	reader := bufio.NewReader(os.Stdin)
 
-	readField := func(prompt, current string) string {
-		fmt.Printf("%s [%s]: ", prompt, current)
-		val := readLine(reader)
-		if val == "" {
-			return current
-		}
-		return val
-	}
-
 	// readPassword prompts for a password with masked (starred) input,
 	// without ever displaying the current value. Pressing Enter (empty
 	// input) keeps the existing password unchanged.
 	readPassword := func(prompt, current string) string {
-		val := askPassword(fmt.Sprintf("%s [press Enter to keep current]: ", prompt))
+		val := askPassword(prompt + " (press Enter to keep current)")
 		if val == "" {
 			return current
 		}
 		return val
 	}
 
-	j.Name = readField("Job Name", j.Name)
-	j.Type = readField("Type (dump/restore/sync)", j.Type)
-	j.Schedule = readField("Schedule (cron expression, e.g. \"0 2 * * *\")", j.Schedule)
+	j.Name = interactivelist.Text(reader, "Job Name", j.Name)
+	j.Type = selectJobType(j.Type)
+	j.Schedule = interactivelist.Text(reader, "Schedule (cron expression, e.g. \"0 2 * * *\")", j.Schedule)
 
 	switch j.Type {
 	case "dump":
-		j.SrcConfigName = readField("Source Config Name", j.SrcConfigName)
+		j.SrcConfigName = interactivelist.Text(reader, "Source Config Name", j.SrcConfigName)
 		j.SrcPassword = readPassword("Source DB Password", j.SrcPassword)
 
 	case "restore":
-		j.DstConfigName = readField("Destination Config Name", j.DstConfigName)
+		j.DstConfigName = interactivelist.Text(reader, "Destination Config Name", j.DstConfigName)
 		j.DstPassword = readPassword("Destination DB Password", j.DstPassword)
-		j.SrcConfigName = readField("Source Config Name", j.SrcConfigName)
-		j.OverwriteTables = readBool(reader, "Overwrite existing tables?", j.OverwriteTables)
+		j.SrcConfigName = interactivelist.Text(reader, "Source Config Name", j.SrcConfigName)
+		j.OverwriteTables = interactivelist.Confirm("Overwrite existing tables?", j.OverwriteTables)
 
 	case "sync":
-		j.SrcConfigName = readField("Source Config Name", j.SrcConfigName)
+		j.SrcConfigName = interactivelist.Text(reader, "Source Config Name", j.SrcConfigName)
 		j.SrcPassword = readPassword("Source DB Password", j.SrcPassword)
-		j.DstConfigName = readField("Destination Config Name", j.DstConfigName)
+		j.DstConfigName = interactivelist.Text(reader, "Destination Config Name", j.DstConfigName)
 		j.DstPassword = readPassword("Destination DB Password", j.DstPassword)
-		j.OverwriteTables = readBool(reader, "Overwrite existing tables?", j.OverwriteTables)
+		j.OverwriteTables = interactivelist.Confirm("Overwrite existing tables?", j.OverwriteTables)
 
 	default:
 		fmt.Println("Unknown type. Use dump, restore, or sync.")
 	}
 
 	return j
-}
-
-func readLine(r *bufio.Reader) string {
-	s, _ := r.ReadString('\n')
-	return strings.TrimSpace(s)
-}
-
-// readBool shows the current bool value and accepts y/n (or Enter to keep current).
-func readBool(r *bufio.Reader, prompt string, current bool) bool {
-	cur := "N"
-	if current {
-		cur = "Y"
-	}
-	fmt.Printf("%s [%s] (y/N): ", prompt, cur)
-	val := strings.ToLower(readLine(r))
-	if val == "" {
-		return current
-	}
-	return val == "y" || val == "yes"
 }

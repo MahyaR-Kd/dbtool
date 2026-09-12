@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -169,11 +168,7 @@ func selectDumpDir() string {
 
 // askOverwriteTables asks the user whether to pass --overwrite-tables to myloader.
 func askOverwriteTables() bool {
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Overwrite existing tables? (y/N): ")
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(strings.ToLower(input))
-	return input == "y" || input == "yes"
+	return interactivelist.Confirm("Overwrite existing tables?", false)
 }
 
 func init() {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"dbtool/internal/interactivelist"
 	"dbtool/internal/logger"
 	"dbtool/internal/secureinput"
 	"dbtool/internal/settings"
@@ -90,26 +91,18 @@ Non-interactive example:
 		} else {
 			reader := bufio.NewReader(os.Stdin)
 
-			fmt.Println("Storage backend:")
-			fmt.Println("  1) Local file storage")
-			fmt.Println("  2) S3 (or S3-compatible) object storage")
-			fmt.Printf("Select [current: %s]: ", s.StorageType)
-
-			choice, _ := reader.ReadString('\n')
-			choice = strings.TrimSpace(choice)
-
-			switch choice {
-			case "1":
-				s.StorageType = settings.StorageLocal
-				fmt.Println("Storage set to: local")
-			case "2":
-				s.StorageType = settings.StorageS3
-				s.S3 = askS3Config(reader, s.S3)
-			default:
-				if choice == "" {
-					fmt.Printf("Keeping current storage type: %s\n", s.StorageType)
-				} else {
-					fmt.Printf("Invalid selection %q — keeping current storage type: %s\n", choice, s.StorageType)
+			options := []string{"Local file storage", "S3 (or S3-compatible) object storage"}
+			idx, err := interactivelist.SelectOne(fmt.Sprintf("Storage backend (current: %s)", s.StorageType), options)
+			if err != nil {
+				fmt.Printf("Selection canceled — keeping current storage type: %s\n", s.StorageType)
+			} else {
+				switch idx {
+				case 0:
+					s.StorageType = settings.StorageLocal
+					fmt.Println("Storage set to: local")
+				case 1:
+					s.StorageType = settings.StorageS3
+					s.S3 = askS3Config(reader, s.S3)
 				}
 			}
 		}
@@ -155,32 +148,16 @@ var s3ShowCmd = &cobra.Command{
 // askS3Config interactively prompts for S3 credentials, keeping existing
 // values when the user presses Enter without input.
 func askS3Config(reader *bufio.Reader, current settings.S3Config) settings.S3Config {
-	readField := func(prompt, cur string) string {
-		if cur != "" {
-			fmt.Printf("%s [%s]: ", prompt, cur)
-		} else {
-			fmt.Printf("%s: ", prompt)
-		}
-		val, _ := reader.ReadString('\n')
-		val = strings.TrimSpace(val)
-		if val == "" {
-			return cur
-		}
-		return val
-	}
-
 	// readSecret prompts for a sensitive value with masked (starred) input.
 	// When a value is already set it shows a fixed placeholder so the actual
 	// secret never flows into any print statement. Pressing Enter keeps the
 	// current value; any non-empty input replaces it.
 	readSecret := func(prompt, cur string) string {
-		var label string
+		placeholder := ""
 		if cur != "" {
-			label = fmt.Sprintf("%s [%s]: ", prompt, maskedPlaceholder)
-		} else {
-			label = fmt.Sprintf("%s: ", prompt)
+			placeholder = maskedPlaceholder
 		}
-		val, err := secureinput.ReadPassword(label)
+		val, err := secureinput.ReadPassword(interactivelist.PromptLabel(prompt, placeholder))
 		if err != nil {
 			fmt.Println("Error reading input:", err)
 			return cur
@@ -194,13 +171,13 @@ func askS3Config(reader *bufio.Reader, current settings.S3Config) settings.S3Con
 	}
 
 	cfg := current
-	cfg.Bucket = readField("S3 Bucket", cfg.Bucket)
-	cfg.Region = readField("S3 Region", cfg.Region)
+	cfg.Bucket = interactivelist.Text(reader, "S3 Bucket", cfg.Bucket)
+	cfg.Region = interactivelist.Text(reader, "S3 Region", cfg.Region)
 	cfg.AccessKey = readSecret("S3 Access Key", cfg.AccessKey)
 	cfg.SecretKey = readSecret("S3 Secret Key", cfg.SecretKey)
 
-	cfg.Prefix = readField("S3 Key Prefix (optional)", cfg.Prefix)
-	cfg.Endpoint = readField("Custom Endpoint URL (optional, e.g. http://minio:9000)", cfg.Endpoint)
+	cfg.Prefix = interactivelist.Text(reader, "S3 Key Prefix (optional)", cfg.Prefix)
+	cfg.Endpoint = interactivelist.Text(reader, "Custom Endpoint URL (optional, e.g. http://minio:9000)", cfg.Endpoint)
 
 	return cfg
 }

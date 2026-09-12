@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"dbtool/internal/interactivelist"
 	"dbtool/internal/logger"
 	"dbtool/internal/secureinput"
 	"dbtool/internal/settings"
@@ -66,28 +67,12 @@ Non-interactive example:
 		} else {
 			reader := bufio.NewReader(os.Stdin)
 
-			readField := func(prompt, cur string) string {
-				if cur != "" {
-					fmt.Printf("%s [%s]: ", prompt, cur)
-				} else {
-					fmt.Printf("%s: ", prompt)
-				}
-				val, _ := reader.ReadString('\n')
-				val = strings.TrimSpace(val)
-				if val == "" {
-					return cur
-				}
-				return val
-			}
-
 			readSecret := func(prompt, cur string) string {
-				var label string
+				placeholder := ""
 				if cur != "" {
-					label = fmt.Sprintf("%s [%s]: ", prompt, maskedPlaceholder)
-				} else {
-					label = fmt.Sprintf("%s: ", prompt)
+					placeholder = maskedPlaceholder
 				}
-				val, err := secureinput.ReadPassword(label)
+				val, err := secureinput.ReadPassword(interactivelist.PromptLabel(prompt, placeholder))
 				if err != nil {
 					fmt.Println("Error reading input:", err)
 					return cur
@@ -100,13 +85,13 @@ Non-interactive example:
 			}
 
 			s.Telegram.BotToken = readSecret("Bot token", s.Telegram.BotToken)
-			s.Telegram.ChatID = readField("Chat ID", s.Telegram.ChatID)
+			s.Telegram.ChatID = interactivelist.Text(reader, "Chat ID", s.Telegram.ChatID)
 
 			curChunk := strconv.Itoa(s.Telegram.ChunkSizeMB)
 			if s.Telegram.ChunkSizeMB <= 0 {
 				curChunk = fmt.Sprintf("default, %d", settings.DefaultTelegramChunkSizeMB)
 			}
-			fmt.Printf("Chunk size in MB [%s]: ", curChunk)
+			fmt.Print(interactivelist.PromptLabel("Chunk size in MB", curChunk))
 			chunkStr, _ := reader.ReadString('\n')
 			chunkStr = strings.TrimSpace(chunkStr)
 			if chunkStr != "" {

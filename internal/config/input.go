@@ -20,54 +20,29 @@ func AskInteractive() types.Config {
 	reader := bufio.NewReader(os.Stdin)
 	var cfg types.Config
 
-	fmt.Print("Name: ")
-	cfg.Name, _ = reader.ReadString('\n')
-	cfg.Name = strings.TrimSpace(cfg.Name)
-
-	fmt.Print("Host: ")
-	cfg.Host, _ = reader.ReadString('\n')
-	cfg.Host = strings.TrimSpace(cfg.Host)
-
-	fmt.Print("Port: ")
-	cfg.Port, _ = reader.ReadString('\n')
-	cfg.Port = strings.TrimSpace(cfg.Port)
-
-	fmt.Print("User: ")
-	cfg.User, _ = reader.ReadString('\n')
-	cfg.User = strings.TrimSpace(cfg.User)
+	cfg.Name = interactivelist.Text(reader, "Name", "")
+	cfg.Host = interactivelist.Text(reader, "Host", "")
+	cfg.Port = interactivelist.Text(reader, "Port", "")
+	cfg.User = interactivelist.Text(reader, "User", "")
 
 	cfg.RetentionDays = askRetentionDays(reader, 0)
 
-	fmt.Print("Use SSH? (true/false): ")
-	sshStr, _ := reader.ReadString('\n')
-	sshStr = strings.TrimSpace(sshStr)
-	cfg.SSH = strings.EqualFold(sshStr, "true")
+	cfg.SSH = interactivelist.Confirm("Use SSH?", false)
 
 	if cfg.SSH {
-		fmt.Print("SSH Host: ")
-		cfg.SSHHost, _ = reader.ReadString('\n')
-		cfg.SSHHost = strings.TrimSpace(cfg.SSHHost)
-
-		fmt.Print("SSH User: ")
-		cfg.SSHUser, _ = reader.ReadString('\n')
-		cfg.SSHUser = strings.TrimSpace(cfg.SSHUser)
-
-		fmt.Print("SSH Port: ")
-		cfg.SSHPort, _ = reader.ReadString('\n')
-		cfg.SSHPort = strings.TrimSpace(cfg.SSHPort)
+		cfg.SSHHost = interactivelist.Text(reader, "SSH Host", "")
+		cfg.SSHUser = interactivelist.Text(reader, "SSH User", "")
+		cfg.SSHPort = interactivelist.Text(reader, "SSH Port", "")
 	}
 
-	fmt.Print("Skip global lock (--no-locks)? Needed if user lacks RELOAD privilege (true/false) [false]: ")
-	noLocksStr, _ := reader.ReadString('\n')
-	noLocksStr = strings.TrimSpace(noLocksStr)
-	cfg.NoLocks = strings.EqualFold(noLocksStr, "true")
+	cfg.NoLocks = interactivelist.Confirm("Skip global lock (--no-locks)? Needed if user lacks RELOAD privilege", false)
 
-	pass, err := secureinput.ReadPassword("DB Password (used to fetch schema list): ")
+	pass, err := secureinput.ReadPassword(interactivelist.PromptLabel("DB Password (used to fetch schema list)", ""))
 	if err != nil {
 		fmt.Println("Error reading password:", err)
 		pass = ""
 	}
-	cfg.Password = maybeSavePassword(reader, pass)
+	cfg.Password = maybeSavePassword(pass)
 
 	s := settings.Load()
 
@@ -75,7 +50,7 @@ func AskInteractive() types.Config {
 	cfg, cleanup := connection.ApplyTunnels(cfg, s)
 	defer cleanup()
 
-	cfg.IgnoredSchemas, cfg.IgnoredTables, _ = askIgnoredSchemasAndTables(reader, cfg.Host, cfg.Port, cfg.User, pass, nil, nil)
+	cfg.IgnoredSchemas, cfg.IgnoredTables, _ = askIgnoredSchemasAndTables(cfg.Host, cfg.Port, cfg.User, pass, nil, nil)
 
 	// Restore the original host/port so the saved config points at the real
 	// database address, not the ephemeral tunnel endpoint.
@@ -89,51 +64,28 @@ func AskInteractive() types.Config {
 func EditInteractive(cfg types.Config) types.Config {
 	reader := bufio.NewReader(os.Stdin)
 
-	readField := func(prompt, current string) string {
-		fmt.Printf("%s [%s]: ", prompt, current)
-		val, _ := reader.ReadString('\n')
-		val = strings.TrimSpace(val)
-		if val == "" {
-			return current
-		}
-		return val
-	}
-
-	cfg.Name = readField("Name", cfg.Name)
-	cfg.Host = readField("Host", cfg.Host)
-	cfg.Port = readField("Port", cfg.Port)
-	cfg.User = readField("User", cfg.User)
+	cfg.Name = interactivelist.Text(reader, "Name", cfg.Name)
+	cfg.Host = interactivelist.Text(reader, "Host", cfg.Host)
+	cfg.Port = interactivelist.Text(reader, "Port", cfg.Port)
+	cfg.User = interactivelist.Text(reader, "User", cfg.User)
 	cfg.RetentionDays = askRetentionDays(reader, cfg.RetentionDays)
 
-	fmt.Printf("Use SSH? (true/false) [%t]: ", cfg.SSH)
-	sshStr, _ := reader.ReadString('\n')
-	sshStr = strings.TrimSpace(sshStr)
-	if sshStr != "" {
-		cfg.SSH = strings.EqualFold(sshStr, "true")
-	}
+	cfg.SSH = interactivelist.Confirm("Use SSH?", cfg.SSH)
 
 	if cfg.SSH {
-		cfg.SSHHost = readField("SSH Host", cfg.SSHHost)
-		cfg.SSHUser = readField("SSH User", cfg.SSHUser)
-		cfg.SSHPort = readField("SSH Port", cfg.SSHPort)
+		cfg.SSHHost = interactivelist.Text(reader, "SSH Host", cfg.SSHHost)
+		cfg.SSHUser = interactivelist.Text(reader, "SSH User", cfg.SSHUser)
+		cfg.SSHPort = interactivelist.Text(reader, "SSH Port", cfg.SSHPort)
 	}
 
-	fmt.Printf("Skip global lock (--no-locks)? [%t]: ", cfg.NoLocks)
-	noLocksStr, _ := reader.ReadString('\n')
-	noLocksStr = strings.TrimSpace(noLocksStr)
-	if noLocksStr != "" {
-		cfg.NoLocks = strings.EqualFold(noLocksStr, "true")
-	}
+	cfg.NoLocks = interactivelist.Confirm("Skip global lock (--no-locks)?", cfg.NoLocks)
 
 	savedLabel := "no"
 	if cfg.Password != "" {
 		savedLabel = "yes"
 	}
-	fmt.Printf("Update saved DB password? (currently saved: %s) (y/n) [n]: ", savedLabel)
-	updatePassAns, _ := reader.ReadString('\n')
-	updatePassAns = strings.TrimSpace(strings.ToLower(updatePassAns))
-	if updatePassAns == "y" || updatePassAns == "yes" {
-		newPass, err := secureinput.ReadPassword("New DB password (press Enter to clear the saved password): ")
+	if interactivelist.Confirm(fmt.Sprintf("Update saved DB password? (currently saved: %s)", savedLabel), false) {
+		newPass, err := secureinput.ReadPassword(interactivelist.PromptLabel("New DB password", "Enter to clear the saved password"))
 		if err != nil {
 			fmt.Println("Error reading password:", err)
 		} else {
@@ -141,11 +93,8 @@ func EditInteractive(cfg types.Config) types.Config {
 		}
 	}
 
-	fmt.Print("Update ignored schemas/tables? (y/n) [n]: ")
-	ans, _ := reader.ReadString('\n')
-	ans = strings.TrimSpace(strings.ToLower(ans))
-	if ans == "y" || ans == "yes" {
-		pass, err := secureinput.ReadPassword("DB Password (used only to fetch schema list, not stored): ")
+	if interactivelist.Confirm("Update ignored schemas/tables?", false) {
+		pass, err := secureinput.ReadPassword(interactivelist.PromptLabel("DB Password (used only to fetch schema list, not stored)", ""))
 		if err != nil {
 			fmt.Println("Error reading password:", err)
 			pass = ""
@@ -157,7 +106,7 @@ func EditInteractive(cfg types.Config) types.Config {
 		tunnelCfg, cleanup := connection.ApplyTunnels(cfg, s)
 		defer cleanup()
 
-		cfg.IgnoredSchemas, cfg.IgnoredTables, _ = askIgnoredSchemasAndTables(reader, tunnelCfg.Host, tunnelCfg.Port, tunnelCfg.User, pass, existingSchemas, existingTables)
+		cfg.IgnoredSchemas, cfg.IgnoredTables, _ = askIgnoredSchemasAndTables(tunnelCfg.Host, tunnelCfg.Port, tunnelCfg.User, pass, existingSchemas, existingTables)
 	}
 
 	return cfg
@@ -166,14 +115,11 @@ func EditInteractive(cfg types.Config) types.Config {
 // maybeSavePassword asks whether to save pass (encrypted under the master
 // password) for future dump/restore use. Returns pass if the user agrees,
 // or "" otherwise (including when pass is itself empty — nothing to save).
-func maybeSavePassword(reader *bufio.Reader, pass string) string {
+func maybeSavePassword(pass string) string {
 	if pass == "" {
 		return ""
 	}
-	fmt.Print("Save this password for future dump/restore (encrypted with your master password)? (y/n) [n]: ")
-	ans, _ := reader.ReadString('\n')
-	ans = strings.TrimSpace(strings.ToLower(ans))
-	if ans == "y" || ans == "yes" {
+	if interactivelist.Confirm("Save this password for future dump/restore (encrypted with your master password)?", false) {
 		return pass
 	}
 	return ""
@@ -236,7 +182,7 @@ func parseSchemaList(input string) []string {
 // always stored, regardless of which mode was used to choose them.
 // existingSchemas and existingTables carry the previously saved values so
 // that an empty selection can ask the user whether to clear them.
-func askIgnoredSchemasAndTables(reader *bufio.Reader, host, port, user, pass string, existingSchemas []string, existingTables map[string][]string) ([]string, map[string][]string, error) {
+func askIgnoredSchemasAndTables(host, port, user, pass string, existingSchemas []string, existingTables map[string][]string) ([]string, map[string][]string, error) {
 	// Route through SOCKS5 proxy if configured.
 	connectHost, connectPort := host, port
 
@@ -281,10 +227,7 @@ func askIgnoredSchemasAndTables(reader *bufio.Reader, host, port, user, pass str
 		}
 
 		if len(selectedIdx) == 0 {
-			fmt.Print("No schemas selected — that would ignore ALL schemas and dump nothing. Include all schemas instead? (Y/n): ")
-			confirm, _ := reader.ReadString('\n')
-			confirm = strings.TrimSpace(strings.ToLower(confirm))
-			if confirm == "" || confirm == "y" || confirm == "yes" {
+			if interactivelist.Confirm("No schemas selected — that would ignore ALL schemas and dump nothing. Include all schemas instead?", true) {
 				for i := range schemas {
 					selectedIdx = append(selectedIdx, i)
 				}
@@ -322,7 +265,7 @@ func askIgnoredSchemasAndTables(reader *bufio.Reader, host, port, user, pass str
 		}
 	}
 
-	ignoredTables, err := askIgnoredTablesForSchemas(reader, dumpableSchemas, connectHost, connectPort, user, pass, existingTables)
+	ignoredTables, err := askIgnoredTablesForSchemas(dumpableSchemas, connectHost, connectPort, user, pass, existingTables)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -334,15 +277,12 @@ func askIgnoredSchemasAndTables(reader *bufio.Reader, host, port, user, pass str
 // that are NOT fully ignored (and thus will be dumped).
 // existingTables carries the previously saved per-schema ignored tables so that
 // an empty answer to the opening question can ask the user whether to clear them.
-func askIgnoredTablesForSchemas(reader *bufio.Reader, dumpableSchemas []string, host, port, user, pass string, existingTables map[string][]string) (map[string][]string, error) {
+func askIgnoredTablesForSchemas(dumpableSchemas []string, host, port, user, pass string, existingTables map[string][]string) (map[string][]string, error) {
 	if len(dumpableSchemas) == 0 {
 		return nil, nil
 	}
 
-	fmt.Print("Do you want to restrict tables in any schema? (y/n) [n]: ")
-	ans, _ := reader.ReadString('\n')
-	ans = strings.TrimSpace(strings.ToLower(ans))
-	if ans != "y" && ans != "yes" {
+	if !interactivelist.Confirm("Do you want to restrict tables in any schema?", false) {
 		return existingTables, nil
 	}
 
@@ -427,10 +367,7 @@ func askIgnoredTablesForSchemas(reader *bufio.Reader, dumpableSchemas []string, 
 			}
 		}
 
-		fmt.Print("Configure tables for another schema? (y/n) [n]: ")
-		more, _ := reader.ReadString('\n')
-		more = strings.TrimSpace(strings.ToLower(more))
-		if more != "y" && more != "yes" {
+		if !interactivelist.Confirm("Configure tables for another schema?", false) {
 			break
 		}
 	}
@@ -572,7 +509,7 @@ func AskPassword(cliPass, envVar string, cfg types.Config) string {
 		}
 	}
 
-	pass, err := secureinput.ReadPassword("DB Password: ")
+	pass, err := secureinput.ReadPassword(interactivelist.PromptLabel("DB Password", ""))
 	if err != nil {
 		fmt.Println("Error reading password:", err)
 		os.Exit(1)
@@ -585,7 +522,7 @@ func askRetentionDays(reader *bufio.Reader, current int) int {
 		current = 0
 	}
 	for {
-		fmt.Printf("Retention days for dumps (0 = keep forever) [%d]: ", current)
+		fmt.Print(interactivelist.PromptLabel("Retention days for dumps (0 = keep forever)", strconv.Itoa(current)))
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 		if input == "" {

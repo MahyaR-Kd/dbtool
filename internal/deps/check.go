@@ -1,7 +1,7 @@
 package deps
 
 import (
-	"bufio"
+	"dbtool/internal/interactivelist"
 	"dbtool/internal/logger"
 	"fmt"
 	"os"
@@ -86,13 +86,8 @@ func Require(tools ...string) {
 	}
 
 	fmt.Printf("Suggested install command: %s %s\n", cmd, strings.Join(args, " "))
-	fmt.Print("Install now? (y/n): ")
 
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(strings.ToLower(answer))
-
-	if answer != "y" && answer != "yes" {
+	if !interactivelist.Confirm("Install now?", false) {
 		logger.Warn("user declined to install missing tools: %s", strings.Join(missing, ", "))
 		fmt.Println("Aborted. Please install the required tools and try again.")
 		os.Exit(1)

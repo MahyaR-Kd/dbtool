@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"dbtool/internal/interactivelist"
 	"dbtool/internal/logger"
 	"dbtool/internal/secureinput"
 	"dbtool/internal/settings"
@@ -60,28 +61,12 @@ Non-interactive example:
 		} else {
 			reader := bufio.NewReader(os.Stdin)
 
-			readField := func(prompt, cur string) string {
-				if cur != "" {
-					fmt.Printf("%s [%s]: ", prompt, cur)
-				} else {
-					fmt.Printf("%s: ", prompt)
-				}
-				val, _ := reader.ReadString('\n')
-				val = strings.TrimSpace(val)
-				if val == "" {
-					return cur
-				}
-				return val
-			}
-
 			readSecret := func(prompt, cur string) string {
-				var label string
+				placeholder := "optional"
 				if cur != "" {
-					label = fmt.Sprintf("%s [%s]: ", prompt, maskedPlaceholder)
-				} else {
-					label = fmt.Sprintf("%s (optional): ", prompt)
+					placeholder = maskedPlaceholder
 				}
-				val, err := secureinput.ReadPassword(label)
+				val, err := secureinput.ReadPassword(interactivelist.PromptLabel(prompt, placeholder))
 				if err != nil {
 					fmt.Println("Error reading input:", err)
 					return cur
@@ -93,9 +78,9 @@ Non-interactive example:
 				return val
 			}
 
-			s.Proxy.Host = readField("Proxy host", s.Proxy.Host)
-			s.Proxy.Port = readField("Proxy port", s.Proxy.Port)
-			s.Proxy.User = readField("Proxy user (optional, press Enter to skip)", s.Proxy.User)
+			s.Proxy.Host = interactivelist.Text(reader, "Proxy host", s.Proxy.Host)
+			s.Proxy.Port = interactivelist.Text(reader, "Proxy port", s.Proxy.Port)
+			s.Proxy.User = interactivelist.Text(reader, "Proxy user (optional, press Enter to skip)", s.Proxy.User)
 			s.Proxy.Password = readSecret("Proxy password", s.Proxy.Password)
 
 			if s.Proxy.Host == "" || s.Proxy.Port == "" {

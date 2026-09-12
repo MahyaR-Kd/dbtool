@@ -2,12 +2,37 @@ package interactivelist
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+// captureStdout redirects os.Stdout to a pipe for the duration of fn and
+// returns whatever was written to it, so tests can assert on printAnswer's
+// output without it landing in the actual test log.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = orig })
+
+	fn()
+
+	w.Close()
+	os.Stdout = orig
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	return string(data)
+}
 
 // writeFakeFzf creates an executable shell script standing in for the real
 // fzf binary: it records its argv and stdin to files (so the test can
@@ -77,6 +102,41 @@ func TestRunFzf_SendsIndexedOptionsAndParsesSelection(t *testing.T) {
 	}
 	if strings.Contains(string(args), "--multi") {
 		t.Errorf("single-select must not pass --multi, got: %s", args)
+	}
+}
+
+func TestRunFzf_PrintsAnswerAfterSelection(t *testing.T) {
+	withFakeFzf(t, "1\n", 0)
+
+	var idxs []int
+	var err error
+	out := captureStdout(t, func() {
+		idxs, err = runFzf("Pick", []string{"alpha", "beta", "gamma"}, false, nil)
+	})
+	if err != nil {
+		t.Fatalf("runFzf: %v", err)
+	}
+	if len(idxs) != 1 || idxs[0] != 1 {
+		t.Fatalf("got %v, want [1]", idxs)
+	}
+
+	// fzf's own UI leaves no trace once it exits, so runFzf must print the
+	// question and the chosen answer itself — otherwise, unlike a typed
+	// prompt, both vanish from the scrollback once the next question
+	// appears.
+	if !strings.Contains(out, "Pick") || !strings.Contains(out, "beta") {
+		t.Errorf("expected printed answer to contain the prompt and chosen option, got: %q", out)
+	}
+}
+
+func TestRunFzf_MultiSelectPrintsCommaJoinedAnswer(t *testing.T) {
+	withFakeFzf(t, "0\n2\n", 0)
+
+	out := captureStdout(t, func() {
+		_, _ = runFzf("Pick", []string{"alpha", "beta", "gamma"}, true, nil)
+	})
+	if !strings.Contains(out, "alpha, gamma") {
+		t.Errorf("expected comma-joined answer \"alpha, gamma\", got: %q", out)
 	}
 }
 

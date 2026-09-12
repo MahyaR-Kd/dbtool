@@ -87,7 +87,33 @@ func runFzf(prompt string, options []string, multi bool, preselected Preselected
 	if len(idxs) == 0 {
 		return nil, ErrCanceled
 	}
+
+	// fzf's --height mode erases its own UI on exit, leaving no trace of
+	// the question or the answer behind — unlike a typed prompt, where the
+	// terminal's own line echo keeps "? Label: value" visible in the
+	// scrollback. Print that same line ourselves so a picker answer looks
+	// just as permanent as a typed one before the next question appears.
+	printAnswer(prompt, describeChoices(options, idxs))
 	return idxs, nil
+}
+
+// describeChoices renders the chosen option(s) as a single display string:
+// the option text itself for one choice, comma-joined for several.
+func describeChoices(options []string, idxs []int) string {
+	chosen := make([]string, len(idxs))
+	for i, idx := range idxs {
+		chosen[i] = options[idx]
+	}
+	return strings.Join(chosen, ", ")
+}
+
+// printAnswer prints a completed "? prompt answer" line in the same style
+// as every other prompt's label, so it reads as a permanent record of what
+// was asked and chosen rather than a still-open question.
+func printAnswer(prompt, answer string) {
+	marker := style(ansiCyan+ansiBold, "?")
+	label := style(ansiBold, prompt)
+	fmt.Printf("%s %s %s\n", marker, label, answer)
 }
 
 // preselectBind builds a `--bind start:pos(N)+select+pos(M)+select+...`

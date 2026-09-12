@@ -145,6 +145,70 @@ var s3ShowCmd = &cobra.Command{
 	},
 }
 
+// awsRegions lists AWS's standard region codes, offered as a picker for
+// the S3 Region field. S3-compatible providers (MinIO, etc.) don't use
+// real AWS regions, so the list always ends with a Custom option that
+// falls through to typing any value.
+var awsRegions = []string{
+	"us-east-1",
+	"us-east-2",
+	"us-west-1",
+	"us-west-2",
+	"af-south-1",
+	"ap-east-1",
+	"ap-south-1",
+	"ap-south-2",
+	"ap-southeast-1",
+	"ap-southeast-2",
+	"ap-southeast-3",
+	"ap-southeast-4",
+	"ap-northeast-1",
+	"ap-northeast-2",
+	"ap-northeast-3",
+	"ca-central-1",
+	"ca-west-1",
+	"eu-central-1",
+	"eu-central-2",
+	"eu-west-1",
+	"eu-west-2",
+	"eu-west-3",
+	"eu-north-1",
+	"eu-south-1",
+	"eu-south-2",
+	"il-central-1",
+	"me-central-1",
+	"me-south-1",
+	"sa-east-1",
+}
+
+const customRegionOption = "Custom (type a region — e.g. for MinIO or another S3-compatible provider)"
+
+// askRegion offers awsRegions through the arrow-key picker, with current
+// (if set) reordered to the front so it's preselected and Enter keeps it
+// — even when current is a non-AWS value from a prior custom entry.
+// Choosing the trailing Custom option falls through to a free-text prompt.
+func askRegion(reader *bufio.Reader, current string) string {
+	options := make([]string, 0, len(awsRegions)+2)
+	if current != "" {
+		options = append(options, current)
+	}
+	for _, r := range awsRegions {
+		if r != current {
+			options = append(options, r)
+		}
+	}
+	options = append(options, customRegionOption)
+
+	idx, err := interactivelist.SelectOne("S3 Region", options)
+	if err != nil {
+		return current
+	}
+	if options[idx] == customRegionOption {
+		return interactivelist.Text(reader, "S3 Region (custom)", current)
+	}
+	return options[idx]
+}
+
 // askS3Config interactively prompts for S3 credentials, keeping existing
 // values when the user presses Enter without input.
 func askS3Config(reader *bufio.Reader, current settings.S3Config) settings.S3Config {
@@ -172,7 +236,7 @@ func askS3Config(reader *bufio.Reader, current settings.S3Config) settings.S3Con
 
 	cfg := current
 	cfg.Bucket = interactivelist.Text(reader, "S3 Bucket", cfg.Bucket)
-	cfg.Region = interactivelist.Text(reader, "S3 Region", cfg.Region)
+	cfg.Region = askRegion(reader, cfg.Region)
 	cfg.AccessKey = readSecret("S3 Access Key", cfg.AccessKey)
 	cfg.SecretKey = readSecret("S3 Secret Key", cfg.SecretKey)
 

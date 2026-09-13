@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // cartsSchemaSQL reproduces the exact CREATE TABLE shape from the real
@@ -68,6 +70,57 @@ func writeDumpFile(t *testing.T, dir, name, content string, gz bool) {
 	}
 	if err := gw.Close(); err != nil {
 		t.Fatalf("gzip close %s: %v", name, err)
+	}
+}
+
+// writeDumpFileZst mirrors writeDumpFile for zstd-compressed files.
+func writeDumpFileZst(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	defer f.Close()
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		t.Fatalf("zstd.NewWriter %s: %v", name, err)
+	}
+	if _, err := zw.Write([]byte(content)); err != nil {
+		t.Fatalf("zstd write %s: %v", name, err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zstd close %s: %v", name, err)
+	}
+}
+
+// TestValidateDump_DetectsRealWorldCartsBug_ZstCompressed guards against a
+// real bug: mydumper's --compress flag can produce .zst output instead of
+// .gz depending on version (observed on a real mydumper 1.0.5 build) —
+// before this package understood .zst, ValidateDump silently skipped these
+// files entirely (openCompressed only recognized ".gz"), so the exact
+// column-dropped safety net this test exercises would never have fired on
+// a real zstd-compressed dump.
+func TestValidateDump_DetectsRealWorldCartsBug_ZstCompressed(t *testing.T) {
+	dir := t.TempDir()
+	writeDumpFileZst(t, dir, "shopping_cart.carts-schema.sql.zst", cartsSchemaSQL)
+	writeDumpFileZst(t, dir, "shopping_cart.carts.sql.zst", cartsBuggyInsertSQL)
+
+	issues := ValidateDump(dir)
+	if len(issues) != 1 {
+		t.Fatalf("got %d issues, want 1: %+v", len(issues), issues)
+	}
+	if issues[0].Table != "carts" {
+		t.Errorf("table = %q, want %q", issues[0].Table, "carts")
+	}
+	want := map[string]bool{"created_at": true, "updated_at": true}
+	if len(issues[0].Missing) != len(want) {
+		t.Fatalf("missing = %v, want exactly %v", issues[0].Missing, want)
+	}
+	for _, m := range issues[0].Missing {
+		if !want[m] {
+			t.Errorf("unexpected missing column %q", m)
+		}
 	}
 }
 

@@ -1,7 +1,6 @@
 package db
 
 import (
-	"compress/gzip"
 	"io"
 	"os"
 	"path/filepath"
@@ -68,30 +67,19 @@ func PatchDumpDir(dir string) {
 	}
 }
 
-// patchSchemaFile reads a single schema file (compressed or plain), applies
-// zero-date patches via patchSQL, and writes the result back in-place using a
-// temp file so the original is never left in a partial state.
+// patchSchemaFile reads a single schema file (compressed with gzip, zstd,
+// or plain), applies zero-date patches via patchSQL, and writes the result
+// back in-place — in whichever compression format it was read from — using
+// a temp file so the original is never left in a partial state.
 func patchSchemaFile(path string) error {
-	f, err := os.Open(path)
+	format := detectCompression(path)
+
+	r, err := openCompressed(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	compressed := strings.HasSuffix(path, ".gz")
-
-	var reader io.Reader = f
-	var gz *gzip.Reader
-	if compressed {
-		gz, err = gzip.NewReader(f)
-		if err != nil {
-			return err
-		}
-		defer gz.Close()
-		reader = gz
-	}
-
-	data, err := io.ReadAll(reader)
+	data, err := io.ReadAll(r)
+	r.Close()
 	if err != nil {
 		return err
 	}
@@ -107,19 +95,7 @@ func patchSchemaFile(path string) error {
 		return err
 	}
 
-	writeErr := func() error {
-		if compressed {
-			gw := gzip.NewWriter(out)
-			if _, err := gw.Write([]byte(patched)); err != nil {
-				return err
-			}
-			return gw.Close()
-		}
-		_, err := io.WriteString(out, patched)
-		return err
-	}()
-
-	if writeErr != nil {
+	if writeErr := writeCompressed(out, format, []byte(patched)); writeErr != nil {
 		out.Close()
 		os.Remove(tmp)
 		return writeErr

@@ -1,7 +1,6 @@
 package db
 
 import (
-	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -61,7 +60,7 @@ func ValidateDump(dir string) []ValidationIssue {
 		}
 
 		schemaPath := filepath.Join(dir, e.Name())
-		schemaSQL, err := readAllMaybeGzip(schemaPath)
+		schemaSQL, err := readAllCompressed(schemaPath)
 		if err != nil {
 			logger.Debug("ValidateDump: cannot read schema file %s: %v", schemaPath, err)
 			continue
@@ -78,7 +77,7 @@ func ValidateDump(dir string) []ValidationIssue {
 			continue // no data file — e.g. a schema-only dump
 		}
 
-		prefix, err := readPrefixMaybeGzip(filepath.Join(dir, dataFile), insertColumnPrefixBytes)
+		prefix, err := readPrefixCompressed(filepath.Join(dir, dataFile), insertColumnPrefixBytes)
 		if err != nil {
 			logger.Debug("ValidateDump: cannot read data file %s: %v", dataFile, err)
 			continue
@@ -292,7 +291,7 @@ func findFirstDataFile(entries []os.DirEntry, base string) string {
 		if !strings.HasPrefix(name, prefix) || strings.Contains(name, "-schema") {
 			continue
 		}
-		if !strings.HasSuffix(name, ".sql") && !strings.HasSuffix(name, ".sql.gz") {
+		if !strings.HasSuffix(name, ".sql") && !strings.HasSuffix(name, ".sql.gz") && !strings.HasSuffix(name, ".sql.zst") {
 			continue
 		}
 		candidates = append(candidates, name)
@@ -304,11 +303,11 @@ func findFirstDataFile(entries []os.DirEntry, base string) string {
 	return candidates[0]
 }
 
-// readAllMaybeGzip reads the entire contents of path, transparently
-// decompressing if it has a .gz suffix. Schema files are small (a handful of
+// readAllCompressed reads the entire contents of path, transparently
+// decompressing (see openCompressed). Schema files are small (a handful of
 // KB at most), so reading them fully is fine.
-func readAllMaybeGzip(path string) ([]byte, error) {
-	r, err := openMaybeGzip(path)
+func readAllCompressed(path string) ([]byte, error) {
+	r, err := openCompressed(path)
 	if err != nil {
 		return nil, err
 	}
@@ -316,50 +315,15 @@ func readAllMaybeGzip(path string) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
-// readPrefixMaybeGzip reads at most maxBytes from path, transparently
-// decompressing if it has a .gz suffix. Used for data files, which can be
+// readPrefixCompressed reads at most maxBytes from path, transparently
+// decompressing (see openCompressed). Used for data files, which can be
 // arbitrarily large — only the beginning is needed to find the first
 // INSERT statement's column list.
-func readPrefixMaybeGzip(path string, maxBytes int64) ([]byte, error) {
-	r, err := openMaybeGzip(path)
+func readPrefixCompressed(path string, maxBytes int64) ([]byte, error) {
+	r, err := openCompressed(path)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
 	return io.ReadAll(io.LimitReader(r, maxBytes))
-}
-
-// openMaybeGzip opens path for reading, transparently decompressing if it
-// has a .gz suffix. The returned ReadCloser closes both the gzip reader and
-// the underlying file.
-func openMaybeGzip(path string) (io.ReadCloser, error) {
-	f, err := os.Open(path) // #nosec G304 -- path is built from a directory listing of a dump dir dbtool created itself
-	if err != nil {
-		return nil, err
-	}
-	if !strings.HasSuffix(path, ".gz") {
-		return f, nil
-	}
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	return &gzipFile{gz: gz, f: f}, nil
-}
-
-type gzipFile struct {
-	gz *gzip.Reader
-	f  *os.File
-}
-
-func (g *gzipFile) Read(p []byte) (int, error) { return g.gz.Read(p) }
-
-func (g *gzipFile) Close() error {
-	gzErr := g.gz.Close()
-	fErr := g.f.Close()
-	if gzErr != nil {
-		return gzErr
-	}
-	return fErr
 }

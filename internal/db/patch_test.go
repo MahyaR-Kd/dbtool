@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestPatchSQL(t *testing.T) {
@@ -187,6 +189,64 @@ func TestPatchDumpDir_GzFile(t *testing.T) {
 	raw, err := io.ReadAll(gr)
 	if err != nil {
 		t.Fatalf("read patched gz: %v", err)
+	}
+	if string(raw) != wantSQL {
+		t.Errorf("patched content mismatch\n got: %q\nwant: %q", string(raw), wantSQL)
+	}
+}
+
+// TestPatchDumpDir_ZstFile guards against a real bug: mydumper's --compress
+// flag can produce .zst (zstd) output instead of .gz depending on version —
+// a mydumper 1.0.5 build was observed doing exactly this. Before
+// detectCompression/openCompressed/writeCompressed existed, patchSchemaFile
+// only recognized ".gz", so a .zst schema file was read as raw compressed
+// bytes, patchSQL's regexes matched nothing against that garbage, and the
+// function silently no-opped — the ANSI-quote-to-backtick conversion never
+// ran, and myloader failed with "Identifier quote character (`) not found".
+func TestPatchDumpDir_ZstFile(t *testing.T) {
+	dir := t.TempDir()
+
+	schemaSQL := "CREATE TABLE `orders` (\n" +
+		"  `id` int NOT NULL,\n" +
+		"  `placed_at` datetime NOT NULL DEFAULT '0000-00-00 00:00:00'\n" +
+		");\n"
+	wantSQL := "CREATE TABLE `orders` (\n" +
+		"  `id` int NOT NULL,\n" +
+		"  `placed_at` datetime NULL DEFAULT NULL\n" +
+		");\n"
+
+	zstPath := filepath.Join(dir, "mydb.orders-schema.sql.zst")
+	f, err := os.Create(zstPath)
+	if err != nil {
+		t.Fatalf("create zst: %v", err)
+	}
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		t.Fatalf("zstd.NewWriter: %v", err)
+	}
+	if _, err := zw.Write([]byte(schemaSQL)); err != nil {
+		t.Fatalf("write zst: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zstd writer: %v", err)
+	}
+	f.Close()
+
+	PatchDumpDir(dir)
+
+	f2, err := os.Open(zstPath)
+	if err != nil {
+		t.Fatalf("open zst after patch: %v", err)
+	}
+	defer f2.Close()
+	zr, err := zstd.NewReader(f2)
+	if err != nil {
+		t.Fatalf("zstd.NewReader: %v", err)
+	}
+	defer zr.Close()
+	raw, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("read patched zst: %v", err)
 	}
 	if string(raw) != wantSQL {
 		t.Errorf("patched content mismatch\n got: %q\nwant: %q", string(raw), wantSQL)

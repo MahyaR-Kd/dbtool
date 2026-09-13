@@ -32,6 +32,7 @@ var s3ConfigAccessKey string
 var s3ConfigSecretKey string
 var s3ConfigPrefix string
 var s3ConfigEndpoint string
+var s3ConfigEncryptionPassword string
 
 var s3ConfigCmd = &cobra.Command{
 	Use:   "config",
@@ -54,7 +55,8 @@ Non-interactive example:
 			cmd.Flags().Changed("access-key") ||
 			cmd.Flags().Changed("secret-key") ||
 			cmd.Flags().Changed("prefix") ||
-			cmd.Flags().Changed("endpoint")
+			cmd.Flags().Changed("endpoint") ||
+			cmd.Flags().Changed("encryption-password")
 
 		if hasFlags {
 			if !cmd.Flags().Changed("storage-type") {
@@ -83,6 +85,9 @@ Non-interactive example:
 				}
 				if cmd.Flags().Changed("endpoint") {
 					s.S3.Endpoint = s3ConfigEndpoint
+				}
+				if cmd.Flags().Changed("encryption-password") {
+					s.S3.EncryptionPassword = s3ConfigEncryptionPassword
 				}
 			default:
 				fmt.Printf("Invalid --storage-type %q. Use \"local\" or \"s3\".\n", s3ConfigStorageType)
@@ -123,6 +128,9 @@ Non-interactive example:
 			if s.S3.Endpoint != "" {
 				fmt.Printf("S3 endpoint: %s\n", s.S3.Endpoint)
 			}
+			if s.S3.EncryptionEnabled() {
+				fmt.Println("S3 encryption: enabled")
+			}
 		}
 	},
 }
@@ -140,6 +148,9 @@ var s3ShowCmd = &cobra.Command{
 			fmt.Printf("Endpoint:     %s\n", s.S3.Endpoint)
 			if s.S3.AccessKey != "" {
 				fmt.Printf("Access key:   %s\n", maskedPlaceholder)
+			}
+			if s.S3.EncryptionEnabled() {
+				fmt.Println("Encryption:   enabled")
 			}
 		}
 	},
@@ -242,6 +253,7 @@ func askS3Config(reader *bufio.Reader, current settings.S3Config) settings.S3Con
 
 	cfg.Prefix = interactivelist.Text(reader, "S3 Key Prefix (optional)", cfg.Prefix)
 	cfg.Endpoint = interactivelist.Text(reader, "Custom Endpoint URL (optional, e.g. http://minio:9000)", cfg.Endpoint)
+	cfg.EncryptionPassword = readSecret("Archive encryption password (optional — encrypts each uploaded file; leave blank to disable)", cfg.EncryptionPassword)
 
 	return cfg
 }
@@ -254,6 +266,7 @@ func init() {
 	s3ConfigCmd.Flags().StringVar(&s3ConfigSecretKey, "secret-key", "", "S3 secret key (non-interactive)")
 	s3ConfigCmd.Flags().StringVar(&s3ConfigPrefix, "prefix", "", "S3 key prefix (non-interactive)")
 	s3ConfigCmd.Flags().StringVar(&s3ConfigEndpoint, "endpoint", "", "Custom S3-compatible endpoint URL (non-interactive)")
+	s3ConfigCmd.Flags().StringVar(&s3ConfigEncryptionPassword, "encryption-password", "", "Password to encrypt each uploaded file with (non-interactive; empty disables encryption)")
 	s3Cmd.AddCommand(s3ConfigCmd)
 	s3Cmd.AddCommand(s3ShowCmd)
 	if installedInPath {

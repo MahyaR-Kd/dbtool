@@ -11,12 +11,18 @@ import (
 	"sort"
 	"strings"
 
+	"dbtool/internal/archivecrypt"
 	"dbtool/internal/logger"
 	"dbtool/internal/settings"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+// encryptedSuffix marks an S3 object as archivecrypt-encrypted (appended
+// to its key on upload) so DownloadDump knows to decrypt it — and strip
+// the suffix back off — on the way down.
+const encryptedSuffix = ".enc"
 
 // newClient builds an S3 client from the stored S3Config.
 func newClient(cfg settings.S3Config) (*s3.Client, error) {
@@ -73,27 +79,61 @@ func UploadDir(cfg settings.S3Config, localDir string) error {
 			return err
 		}
 		key := keyPrefix + filepath.ToSlash(rel)
+		if cfg.EncryptionEnabled() {
+			key += encryptedSuffix
+		}
 
-		if err := uploadFile(client, cfg.Bucket, key, path); err != nil {
+		if err := uploadFile(client, cfg, key, path); err != nil {
 			return err
 		}
 		return nil
 	})
 }
 
-// uploadFile opens a single local file and uploads it to S3.
-func uploadFile(client *s3.Client, bucket, key, localPath string) error {
+// uploadFile opens a single local file and uploads it to S3, encrypting it
+// first (into a sibling temp file, then uploaded from there) when cfg has
+// an encryption password configured. Encrypting to a temp file rather
+// than streaming through a pipe keeps the upload body a plain *os.File —
+// the same shape the unencrypted path already uses — so the S3 SDK can
+// determine its length up front exactly as it always has, instead of
+// relying on less certain streaming-body behavior for a large upload.
+func uploadFile(client *s3.Client, cfg settings.S3Config, key, localPath string) error {
 	f, err := os.Open(localPath) // #nosec G304 -- filepath.Walk guarantees paths stay within localDir; filepath.Join in the caller prevents directory traversal
 	if err != nil {
 		return fmt.Errorf("open %s: %w", localPath, err)
 	}
 	defer f.Close()
 
-	logger.Debug("s3: uploading %s → s3://%s/%s", localPath, bucket, key)
+	body := io.Reader(f)
+	if cfg.EncryptionEnabled() {
+		encPath := localPath + encryptedSuffix + ".tmp"
+		encFile, err := os.Create(encPath) // #nosec G304 -- derived from localPath, which filepath.Walk guarantees stays within the trusted local dump directory
+		if err != nil {
+			return fmt.Errorf("create temp encrypted file for %s: %w", localPath, err)
+		}
+		defer os.Remove(encPath)
+
+		if err := archivecrypt.EncryptStream(encFile, f, cfg.EncryptionPassword); err != nil {
+			encFile.Close()
+			return fmt.Errorf("encrypt %s: %w", localPath, err)
+		}
+		if err := encFile.Close(); err != nil {
+			return fmt.Errorf("close temp encrypted file for %s: %w", localPath, err)
+		}
+
+		encFileForUpload, err := os.Open(encPath) // #nosec G304 -- encPath was just created above from a trusted local path
+		if err != nil {
+			return fmt.Errorf("reopen encrypted %s for upload: %w", localPath, err)
+		}
+		defer encFileForUpload.Close()
+		body = encFileForUpload
+	}
+
+	logger.Debug("s3: uploading %s → s3://%s/%s", localPath, cfg.Bucket, key)
 	_, err = client.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(cfg.Bucket),
 		Key:    aws.String(key),
-		Body:   f,
+		Body:   body,
 	})
 	if err != nil {
 		return fmt.Errorf("upload %s: %w", key, err)
@@ -222,6 +262,11 @@ func DownloadDump(cfg settings.S3Config, dumpName, destDir string) (string, erro
 				continue
 			}
 
+			encrypted := strings.HasSuffix(relPath, encryptedSuffix)
+			if encrypted {
+				relPath = strings.TrimSuffix(relPath, encryptedSuffix)
+			}
+
 			localPath := filepath.Join(localDumpDir, filepath.FromSlash(relPath))
 			if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 				return "", fmt.Errorf("mkdir for %s: %w", localPath, err)
@@ -242,7 +287,15 @@ func DownloadDump(cfg settings.S3Config, dumpName, destDir string) (string, erro
 				out.Body.Close()
 				return "", fmt.Errorf("create %s: %w", localPath, err)
 			}
-			_, copyErr := io.Copy(f, out.Body)
+			var copyErr error
+			switch {
+			case encrypted && cfg.EncryptionPassword == "":
+				copyErr = fmt.Errorf("object %q is encrypted but no S3 encryption password is configured", key)
+			case encrypted:
+				copyErr = archivecrypt.DecryptStream(f, out.Body, cfg.EncryptionPassword)
+			default:
+				_, copyErr = io.Copy(f, out.Body)
+			}
 			out.Body.Close()
 			f.Close()
 			if copyErr != nil {

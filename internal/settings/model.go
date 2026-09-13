@@ -10,12 +10,19 @@ const (
 
 // S3Config holds credentials and location for S3 storage.
 type S3Config struct {
-	Bucket    string `json:"bucket"`
-	Region    string `json:"region"`
-	AccessKey string `json:"access_key"`
-	SecretKey string `json:"secret_key"`
-	Prefix    string `json:"prefix"`
-	Endpoint  string `json:"endpoint"` // optional custom endpoint (e.g. MinIO)
+	Bucket             string `json:"bucket"`
+	Region             string `json:"region"`
+	AccessKey          string `json:"access_key"`
+	SecretKey          string `json:"secret_key"`
+	Prefix             string `json:"prefix"`
+	Endpoint           string `json:"endpoint"`                      // optional custom endpoint (e.g. MinIO)
+	EncryptionPassword string `json:"encryption_password,omitempty"` // optional: encrypts each uploaded file with this password
+}
+
+// EncryptionEnabled reports whether uploaded dump files should be
+// encrypted before they leave the machine.
+func (s S3Config) EncryptionEnabled() bool {
+	return s.EncryptionPassword != ""
 }
 
 // ProxyConfig holds SOCKS5 proxy settings used when connecting to databases.
@@ -39,15 +46,22 @@ const DefaultTelegramChunkSizeMB = 49
 // TelegramConfig holds credentials for delivering dump archives to a Telegram
 // chat via a bot, split into chunks that respect Telegram's file-size limit.
 type TelegramConfig struct {
-	BotToken    string `json:"bot_token"`
-	ChatID      string `json:"chat_id"`
-	ChunkSizeMB int    `json:"chunk_size_mb,omitempty"` // 0 = use DefaultTelegramChunkSizeMB
+	BotToken           string `json:"bot_token"`
+	ChatID             string `json:"chat_id"`
+	ChunkSizeMB        int    `json:"chunk_size_mb,omitempty"`       // 0 = use DefaultTelegramChunkSizeMB
+	EncryptionPassword string `json:"encryption_password,omitempty"` // optional: encrypts the archive with this password before sending
 }
 
 // Enabled reports whether Telegram delivery is configured (bot token and chat ID
 // are both required).
 func (t TelegramConfig) Enabled() bool {
 	return t.BotToken != "" && t.ChatID != ""
+}
+
+// EncryptionEnabled reports whether the archive should be encrypted
+// before being sent to Telegram.
+func (t TelegramConfig) EncryptionEnabled() bool {
+	return t.EncryptionPassword != ""
 }
 
 // ChunkSizeBytes returns the configured chunk size in bytes, falling back to

@@ -68,8 +68,10 @@ func Load() Settings {
 
 	s.S3.AccessKey = decrypt("s3.access_key", s.S3.AccessKey)
 	s.S3.SecretKey = decrypt("s3.secret_key", s.S3.SecretKey)
+	s.S3.EncryptionPassword = decrypt("s3.encryption_password", s.S3.EncryptionPassword)
 	s.Proxy.Password = decrypt("proxy.password", s.Proxy.Password)
 	s.Telegram.BotToken = decrypt("telegram.bot_token", s.Telegram.BotToken)
+	s.Telegram.EncryptionPassword = decrypt("telegram.encryption_password", s.Telegram.EncryptionPassword)
 
 	if needsMigration {
 		logger.Info("settings: migrating plaintext credentials to encrypted storage")
@@ -95,10 +97,16 @@ func Save(s Settings) error {
 	if out.S3.SecretKey, err = secret.EncryptField(s.S3.SecretKey); err != nil {
 		return err
 	}
+	if out.S3.EncryptionPassword, err = secret.EncryptField(s.S3.EncryptionPassword); err != nil {
+		return err
+	}
 	if out.Proxy.Password, err = secret.EncryptField(s.Proxy.Password); err != nil {
 		return err
 	}
 	if out.Telegram.BotToken, err = secret.EncryptField(s.Telegram.BotToken); err != nil {
+		return err
+	}
+	if out.Telegram.EncryptionPassword, err = secret.EncryptField(s.Telegram.EncryptionPassword); err != nil {
 		return err
 	}
 

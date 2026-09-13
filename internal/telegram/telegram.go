@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"dbtool/internal/archivecrypt"
 	"dbtool/internal/logger"
 	"dbtool/internal/settings"
 )
@@ -43,11 +44,34 @@ func SendDump(cfg settings.TelegramConfig, dumpDir string) error {
 
 	dumpName := filepath.Base(dumpDir)
 
-	tarPath, size, err := tarDir(dumpDir)
+	tarPath, _, err := tarDir(dumpDir)
 	if err != nil {
 		return fmt.Errorf("archive dump: %w", err)
 	}
 	defer os.Remove(tarPath)
+
+	// archiveExt is the file extension callers need to reassemble parts
+	// back into ("dbtool decrypt" for .tar.enc, plain tar -xf for .tar) —
+	// it and sendPath both switch to the encrypted file below when
+	// encryption is configured.
+	archiveExt := "tar"
+	sendPath := tarPath
+
+	if cfg.EncryptionEnabled() {
+		encPath := tarPath + ".enc"
+		if err := encryptFile(encPath, tarPath, cfg.EncryptionPassword); err != nil {
+			return fmt.Errorf("encrypt archive: %w", err)
+		}
+		defer os.Remove(encPath)
+		archiveExt = "tar.enc"
+		sendPath = encPath
+	}
+
+	info, err := os.Stat(sendPath)
+	if err != nil {
+		return fmt.Errorf("stat archive: %w", err)
+	}
+	size := info.Size()
 
 	chunkSize := cfg.ChunkSizeBytes()
 	ranges := chunkRanges(size, chunkSize)
@@ -55,18 +79,18 @@ func SendDump(cfg settings.TelegramConfig, dumpDir string) error {
 
 	logger.Info("telegram: sending %q as %d chunk(s) of up to %d bytes each", dumpName, total, chunkSize)
 
-	if err := sendMessageHTML(cfg.BotToken, cfg.ChatID, announcementHTML(dumpName, size, total)); err != nil {
+	if err := sendMessageHTML(cfg.BotToken, cfg.ChatID, announcementHTML(dumpName, size, total, archiveExt)); err != nil {
 		return fmt.Errorf("send announcement: %w", err)
 	}
 
-	f, err := os.Open(tarPath)
+	f, err := os.Open(sendPath)
 	if err != nil {
-		return fmt.Errorf("open tar for chunking: %w", err)
+		return fmt.Errorf("open archive for chunking: %w", err)
 	}
 	defer f.Close()
 
 	for i, r := range ranges {
-		partName := fmt.Sprintf("%s.tar.part%03d", dumpName, i+1)
+		partName := fmt.Sprintf("%s.%s.part%03d", dumpName, archiveExt, i+1)
 		caption := fmt.Sprintf("%s (part %d/%d)", dumpName, i+1, total)
 
 		section := io.NewSectionReader(f, r.Offset, r.Length)
@@ -89,14 +113,44 @@ func SendDump(cfg settings.TelegramConfig, dumpDir string) error {
 }
 
 // announcementHTML builds the Telegram-HTML (parse_mode=HTML) announcement
-// message describing dumpName's size and part count, plus the shell command
-// to reassemble the parts once downloaded.
-func announcementHTML(dumpName string, size int64, total int) string {
+// message describing dumpName's size and part count, plus the shell
+// command to reassemble the parts once downloaded. archiveExt is "tar" or
+// "tar.enc" (see SendDump) — an encrypted archive gets an extra "dbtool
+// decrypt" step in the reassemble instructions, since Telegram delivery
+// has no automated ingest path back into dbtool; the operator reassembles
+// and decrypts by hand before extracting.
+func announcementHTML(dumpName string, size int64, total int, archiveExt string) string {
 	name := html.EscapeString(dumpName)
-	reassemble := html.EscapeString(fmt.Sprintf("cat %s.tar.part* > %s.tar && tar -xf %s.tar", dumpName, dumpName, dumpName))
+
+	reassembleCmd := fmt.Sprintf("cat %s.%s.part* > %s.%s", dumpName, archiveExt, dumpName, archiveExt)
+	if archiveExt == "tar.enc" {
+		reassembleCmd += fmt.Sprintf(" && dbtool decrypt %s.tar.enc %s.tar", dumpName, dumpName)
+	}
+	reassembleCmd += fmt.Sprintf(" && tar -xf %s.tar", dumpName)
 
 	return fmt.Sprintf(
 		"📦 <b>dbtool backup</b>\n<b>Name:</b> <code>%s</code>\n<b>Size:</b> %.2f MB\n<b>Parts:</b> %d\n\n<b>Reassemble with:</b>\n<pre>%s</pre>",
-		name, float64(size)/(1024*1024), total, reassemble,
+		name, float64(size)/(1024*1024), total, html.EscapeString(reassembleCmd),
 	)
+}
+
+// encryptFile encrypts the file at srcPath under password, writing the
+// result to destPath.
+func encryptFile(destPath, srcPath, password string) error {
+	src, err := os.Open(srcPath) // #nosec G304 -- srcPath is dbtool's own just-created tar temp file, not user input
+	if err != nil {
+		return fmt.Errorf("open %s: %w", srcPath, err)
+	}
+	defer src.Close()
+
+	dest, err := os.Create(destPath) // #nosec G304 -- destPath is derived from dbtool's own temp file path, not user input
+	if err != nil {
+		return fmt.Errorf("create %s: %w", destPath, err)
+	}
+
+	if err := archivecrypt.EncryptStream(dest, src, password); err != nil {
+		dest.Close()
+		return err
+	}
+	return dest.Close()
 }

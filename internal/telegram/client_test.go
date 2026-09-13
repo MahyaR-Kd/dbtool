@@ -123,7 +123,7 @@ func TestSendDocument_UploadsSingleFile(t *testing.T) {
 }
 
 func TestAnnouncementHTML(t *testing.T) {
-	got := announcementHTML("mydb_2026-01-01_000000", 100*1024*1024, 3)
+	got := announcementHTML("mydb_2026-01-01_000000", 100*1024*1024, 3, "tar")
 
 	for _, want := range []string{
 		"<b>dbtool backup</b>",
@@ -135,5 +135,16 @@ func TestAnnouncementHTML(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("announcement missing %q\ngot: %s", want, got)
 		}
+	}
+}
+
+func TestAnnouncementHTML_Encrypted(t *testing.T) {
+	got := announcementHTML("mydb_2026-01-01_000000", 100*1024*1024, 3, "tar.enc")
+
+	want := "cat mydb_2026-01-01_000000.tar.enc.part* &gt; mydb_2026-01-01_000000.tar.enc " +
+		"&amp;&amp; dbtool decrypt mydb_2026-01-01_000000.tar.enc mydb_2026-01-01_000000.tar " +
+		"&amp;&amp; tar -xf mydb_2026-01-01_000000.tar"
+	if !strings.Contains(got, want) {
+		t.Errorf("encrypted announcement missing decrypt step\nwant substring: %s\ngot: %s", want, got)
 	}
 }

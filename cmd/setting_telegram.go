@@ -24,6 +24,7 @@ var telegramCmd = &cobra.Command{
 var telegramSetToken string
 var telegramSetChatID string
 var telegramSetChunkSizeMB int
+var telegramSetEncryptionPassword string
 
 var telegramSetCmd = &cobra.Command{
 	Use:   "set",
@@ -43,7 +44,8 @@ Non-interactive example:
 
 		hasFlags := cmd.Flags().Changed("token") ||
 			cmd.Flags().Changed("chat-id") ||
-			cmd.Flags().Changed("chunk-size-mb")
+			cmd.Flags().Changed("chunk-size-mb") ||
+			cmd.Flags().Changed("encryption-password")
 
 		if hasFlags {
 			if !cmd.Flags().Changed("chat-id") {
@@ -63,6 +65,9 @@ Non-interactive example:
 					os.Exit(1)
 				}
 				s.Telegram.ChunkSizeMB = telegramSetChunkSizeMB
+			}
+			if cmd.Flags().Changed("encryption-password") {
+				s.Telegram.EncryptionPassword = telegramSetEncryptionPassword
 			}
 		} else {
 			reader := bufio.NewReader(os.Stdin)
@@ -103,6 +108,8 @@ Non-interactive example:
 				}
 			}
 
+			s.Telegram.EncryptionPassword = readSecret("Archive encryption password (optional — encrypts the archive before sending; leave blank to disable)", s.Telegram.EncryptionPassword)
+
 			if s.Telegram.BotToken == "" || s.Telegram.ChatID == "" {
 				fmt.Println("Error: bot token and chat ID are required.")
 				os.Exit(1)
@@ -132,6 +139,9 @@ var telegramShowCmd = &cobra.Command{
 		fmt.Printf("Bot token:  %s\n", maskedPlaceholder)
 		fmt.Printf("Chat ID:    %s\n", s.Telegram.ChatID)
 		fmt.Printf("Chunk size: %d MB\n", s.Telegram.ChunkSizeBytes()/(1024*1024))
+		if s.Telegram.EncryptionEnabled() {
+			fmt.Println("Encryption: enabled")
+		}
 	},
 }
 
@@ -173,6 +183,7 @@ func init() {
 	telegramSetCmd.Flags().StringVar(&telegramSetToken, "token", "", "Telegram bot token (non-interactive; falls back to DBTOOL_TELEGRAM_TOKEN env var, then a masked prompt)")
 	telegramSetCmd.Flags().StringVar(&telegramSetChatID, "chat-id", "", "Telegram chat ID to deliver dumps to (non-interactive)")
 	telegramSetCmd.Flags().IntVar(&telegramSetChunkSizeMB, "chunk-size-mb", 0, "Chunk size in MB, defaults to 49 (non-interactive)")
+	telegramSetCmd.Flags().StringVar(&telegramSetEncryptionPassword, "encryption-password", "", "Password to encrypt the archive with before sending (non-interactive; empty disables encryption)")
 	telegramCmd.AddCommand(telegramSetCmd)
 	telegramCmd.AddCommand(telegramShowCmd)
 	telegramCmd.AddCommand(telegramClearCmd)

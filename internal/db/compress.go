@@ -93,30 +93,37 @@ func (z zstdDecoder) Close() error {
 	return nil
 }
 
+// newCompressWriter returns an io.WriteCloser that compresses everything
+// written to it into w, in format. Callers must Close it to flush any
+// buffered output. Used for streaming a large file through a patch
+// without holding it all in memory — see sanitizeSQLModePreamble.
+func newCompressWriter(w io.Writer, format compressionFormat) (io.WriteCloser, error) {
+	switch format {
+	case compressionGzip:
+		return gzip.NewWriter(w), nil
+	case compressionZstd:
+		return zstd.NewWriter(w)
+	default:
+		return nopWriteCloser{w}, nil
+	}
+}
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
+
 // writeCompressed writes data to w, compressed to match format — the same
 // format the original file was detected as, so rewriting a patched schema
 // file preserves whatever compression its dump was written with.
 // compressionNone writes data unchanged.
 func writeCompressed(w io.Writer, format compressionFormat, data []byte) error {
-	switch format {
-	case compressionGzip:
-		gw := gzip.NewWriter(w)
-		if _, err := gw.Write(data); err != nil {
-			return err
-		}
-		return gw.Close()
-	case compressionZstd:
-		zw, err := zstd.NewWriter(w)
-		if err != nil {
-			return err
-		}
-		if _, err := zw.Write(data); err != nil {
-			zw.Close()
-			return err
-		}
-		return zw.Close()
-	default:
-		_, err := w.Write(data)
+	cw, err := newCompressWriter(w, format)
+	if err != nil {
 		return err
 	}
+	if _, err := cw.Write(data); err != nil {
+		cw.Close()
+		return err
+	}
+	return cw.Close()
 }

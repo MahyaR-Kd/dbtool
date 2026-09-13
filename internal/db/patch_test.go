@@ -2,9 +2,11 @@ package db
 
 import (
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -142,7 +144,7 @@ func TestPatchSQL(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := patchSQL(tc.input)
+			got := patchSQL(tc.input, true)
 			if got != tc.want {
 				t.Errorf("\ninput: %q\n  got: %q\n want: %q", tc.input, got, tc.want)
 			}
@@ -250,5 +252,196 @@ func TestPatchDumpDir_ZstFile(t *testing.T) {
 	}
 	if string(raw) != wantSQL {
 		t.Errorf("patched content mismatch\n got: %q\nwant: %q", string(raw), wantSQL)
+	}
+}
+
+// TestPatchDumpDir_SkipsAnsiQuoteConversionForMydumper1x guards a real
+// bug: mydumper 1.x auto-detects ANSI_QUOTES mode on the source, writes
+// every file in the dump using that quoting consistently, and records the
+// choice in the dump's own metadata file ("[config]\nquote-character =
+// DOUBLE_QUOTE"). myloader 1.x reads that back and enforces it against
+// every file. Before this fix, dbtool unconditionally converted
+// double-quoted identifiers to backticks — which broke that contract:
+// myloader would look for a double quote (per metadata) and find a
+// backtick instead (because dbtool rewrote it), and abort with
+// "Identifier quote character (\") not found". A dump with that metadata
+// key must be left with its original quoting untouched.
+func TestPatchDumpDir_SkipsAnsiQuoteConversionForMydumper1x(t *testing.T) {
+	dir := t.TempDir()
+
+	schemaSQL := `CREATE TABLE "orders" (` + "\n" +
+		`  "id" int NOT NULL` + "\n" +
+		`);` + "\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "mydb.orders-schema.sql"), []byte(schemaSQL), 0644); err != nil {
+		t.Fatalf("write schema file: %v", err)
+	}
+	// A mydumper 1.x-style metadata file recording ANSI-quote mode.
+	metadata := "[config]\nquote-character = DOUBLE_QUOTE\n"
+	if err := os.WriteFile(filepath.Join(dir, "metadata"), []byte(metadata), 0644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	PatchDumpDir(dir)
+
+	got, err := os.ReadFile(filepath.Join(dir, "mydb.orders-schema.sql"))
+	if err != nil {
+		t.Fatalf("read schema file after patch: %v", err)
+	}
+	if string(got) != schemaSQL {
+		t.Errorf("schema file was modified despite mydumper 1.x metadata\n got: %q\nwant (unchanged): %q", got, schemaSQL)
+	}
+}
+
+// TestPatchDumpDir_ConvertsAnsiQuotesWithoutMydumper1xMetadata is the
+// converse of the test above: with no metadata file at all (or one
+// without a quote-character key — an older mydumper's dump), the ANSI
+// double-quote-to-backtick conversion must still run, since old myloader
+// always expects backticks and has no metadata-driven auto-detection.
+func TestPatchDumpDir_ConvertsAnsiQuotesWithoutMydumper1xMetadata(t *testing.T) {
+	dir := t.TempDir()
+
+	schemaSQL := `CREATE TABLE "orders" (` + "\n" +
+		`  "id" int NOT NULL` + "\n" +
+		`);` + "\n"
+	wantSQL := "CREATE TABLE `orders` (\n" +
+		"  `id` int NOT NULL\n" +
+		");\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "mydb.orders-schema.sql"), []byte(schemaSQL), 0644); err != nil {
+		t.Fatalf("write schema file: %v", err)
+	}
+
+	PatchDumpDir(dir)
+
+	got, err := os.ReadFile(filepath.Join(dir, "mydb.orders-schema.sql"))
+	if err != nil {
+		t.Fatalf("read schema file after patch: %v", err)
+	}
+	if string(got) != wantSQL {
+		t.Errorf("got: %q\nwant: %q", got, wantSQL)
+	}
+}
+
+// TestStripRemovedSQLModeValues guards a real bug: mydumper copies the
+// source server's @@SQL_MODE verbatim into a preamble line written to
+// every file it produces. NO_AUTO_CREATE_USER is valid on MariaDB/older
+// MySQL but was removed (now a hard error) in MySQL 8.0, so restoring a
+// dump from such a source into a modern MySQL 8+ destination crashed
+// myloader on the very first file it touched.
+func TestStripRemovedSQLModeValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "value in the middle",
+			input: `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION';`,
+			want:  `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,NO_ENGINE_SUBSTITUTION';`,
+		},
+		{
+			name:  "value first",
+			input: `SET SQL_MODE='NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION';`,
+			want:  `SET SQL_MODE='NO_ENGINE_SUBSTITUTION';`,
+		},
+		{
+			name:  "value last",
+			input: `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,NO_AUTO_CREATE_USER';`,
+			want:  `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';`,
+		},
+		{
+			name:  "value alone",
+			input: `SET SQL_MODE='NO_AUTO_CREATE_USER';`,
+			want:  `SET SQL_MODE='';`,
+		},
+		{
+			name:  "value absent, untouched",
+			input: `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,NO_ENGINE_SUBSTITUTION';`,
+			want:  `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,NO_ENGINE_SUBSTITUTION';`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := stripRemovedSQLModeValues([]byte(tc.input))
+			if string(got) != tc.want {
+				t.Errorf("got: %q\nwant: %q", got, tc.want)
+			}
+			wantChanged := tc.input != tc.want
+			if changed != wantChanged {
+				t.Errorf("changed = %v, want %v", changed, wantChanged)
+			}
+		})
+	}
+}
+
+// TestPatchSQLModeFile_StreamsLargeDataFileUnchangedAfterHeader guards
+// against a real risk in the streaming implementation: only the header
+// should ever be buffered in memory, with the rest of a (potentially
+// multi-gigabyte) data file streamed through unchanged. This uses a
+// smaller size for test speed, but exercises the same streaming path —
+// Peek the header, patch it, Discard, then io.Copy the remainder.
+func TestPatchSQLModeFile_StreamsLargeDataFileUnchangedAfterHeader(t *testing.T) {
+	dir := t.TempDir()
+
+	header := "/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION'*/;\n"
+	wantHeader := "/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO,NO_ENGINE_SUBSTITUTION'*/;\n"
+
+	// A body well past sqlModePreambleWindow, so the streaming path
+	// (rather than a whole-file read) is actually what's under test.
+	var bodyBuilder strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&bodyBuilder, "(%d,\"row %d\"),\n", i, i)
+	}
+	body := bodyBuilder.String()
+	if len(header)+len(body) <= sqlModePreambleWindow {
+		t.Fatalf("test body too small to exercise streaming: %d bytes, want > %d", len(header)+len(body), sqlModePreambleWindow)
+	}
+
+	path := filepath.Join(dir, "mydb.orders.00000.sql")
+	if err := os.WriteFile(path, []byte(header+body), 0644); err != nil {
+		t.Fatalf("write data file: %v", err)
+	}
+
+	if err := patchSQLModeFile(path); err != nil {
+		t.Fatalf("patchSQLModeFile: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read patched file: %v", err)
+	}
+	want := wantHeader + body
+	if string(got) != want {
+		t.Errorf("patched content mismatch (len got=%d want=%d)", len(got), len(want))
+	}
+}
+
+// TestPatchSQLModeFile_NoChangeLeavesFileUntouched guards against
+// unnecessary rewrites: a file whose preamble has nothing to strip must
+// not be touched at all (no temp file, no rename, mtime unchanged).
+func TestPatchSQLModeFile_NoChangeLeavesFileUntouched(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mydb.orders-schema.sql")
+	content := "/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO'*/;\nCREATE TABLE `orders` (`id` int NOT NULL);\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat before patch: %v", err)
+	}
+
+	if err := patchSQLModeFile(path); err != nil {
+		t.Fatalf("patchSQLModeFile: %v", err)
+	}
+
+	infoAfter, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after patch: %v", err)
+	}
+	if !infoAfter.ModTime().Equal(info.ModTime()) {
+		t.Error("file was rewritten even though nothing needed to change")
 	}
 }

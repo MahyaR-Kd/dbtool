@@ -399,9 +399,8 @@ func RunDump(cfg types.Config, pass string) string {
 
 	logger.Info("dump completed for config %q: %s", cfg.Name, outDir)
 
-	// mydumper can preserve ANSI-style double-quoted identifiers from the
-	// source server. Convert table schema files to MySQL's portable backtick
-	// form before this dump is retained or uploaded.
+	// Patch known dump-portability issues before this dump is retained or
+	// uploaded — see PatchDumpDir for what it does and doesn't touch.
 	PatchDumpDir(outDir)
 	fmt.Println("Dump completed:", outDir)
 

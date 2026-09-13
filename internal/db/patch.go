@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bufio"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,6 +10,28 @@ import (
 
 	"dbtool/internal/logger"
 )
+
+// removedSQLModeValues lists sql_mode values a newer MySQL server now
+// hard-rejects if you try to SET them, even though an older MySQL or
+// MariaDB source still reports them as active. mydumper copies the
+// source's @@SQL_MODE verbatim into a "/*!40101 SET SQL_MODE=...*/;"
+// preamble written to the top of every file it produces — schema-create,
+// per-table schema, and data files alike (mydumper's own
+// initialize_header_in_gstring builds this once and copies it into every
+// new file) — so restoring a dump taken from such a source into a newer
+// destination fails on the very first file myloader touches, before any
+// table data is even loaded. NO_AUTO_CREATE_USER is the confirmed case:
+// deprecated in MySQL 5.7, removed with a hard error ("ERROR 1231:
+// Variable 'sql_mode' can't be set to the value of 'NO_AUTO_CREATE_USER'")
+// in MySQL 8.0.
+var removedSQLModeValues = []string{"NO_AUTO_CREATE_USER"}
+
+// sqlModePreambleWindow bounds how many bytes of a file's decompressed
+// content sanitizeSQLModePreamble inspects for the SET SQL_MODE line.
+// mydumper's header block (SET NAMES, FOREIGN_KEY_CHECKS, SQL_MODE,
+// TIME_ZONE) is always a few hundred bytes at most, comfortably inside
+// this.
+const sqlModePreambleWindow = 4096
 
 var (
 	// reNotNullZeroDate matches NOT NULL DEFAULT '0000-00-00[...]' and replaces
@@ -45,11 +68,33 @@ var (
 //   - Columns that are already nullable have the invalid default replaced with
 //     DEFAULT NULL.
 //
-// It also converts ANSI-style double-quoted identifiers to MySQL backticks.
-// This is needed when restoring with myloader ≤ 0.10, which lacks the
-// --init-command flag that would otherwise disable strict SQL mode, and makes
-// dumps portable to MySQL servers without ANSI_QUOTES enabled.
+// For a dump whose own metadata file shows no [config] quote-character
+// key — meaning mydumper < 1.0 produced it — it also converts ANSI-style
+// double-quoted identifiers to MySQL backticks, needed for myloader ≤
+// 0.10, which always expects backticks and has no way to know the dump
+// used a different convention.
+//
+// A dump with that metadata key (mydumper 1.x) must NOT go through this
+// conversion: mydumper 1.x auto-detects ANSI_QUOTES mode on the source at
+// dump time, uses that quoting consistently across every file in the
+// dump, and records the choice in the metadata file for myloader 1.x to
+// read back and enforce against every file. Converting a double-quoted
+// file to backticks without also rewriting that recorded value creates a
+// mismatch myloader can't recover from: it looks for whatever character
+// metadata told it to expect, doesn't find it in a file dbtool silently
+// rewrote, and aborts with "Identifier quote character (...) not found"
+// (confirmed against mydumper's own source:
+// src/mydumper/mydumper_start_dump.c's detect_quote_character() and its
+// "[config]\nquote-character = %s\n" metadata write, and myloader's read
+// of that same key in src/myloader/myloader_process.c). Checking the
+// dump's own metadata file — rather than the currently installed
+// mydumper's version — is what makes this correct regardless of when or
+// on which machine a dump gets restored.
 func PatchDumpDir(dir string) {
+	sanitizeSQLModePreamble(dir)
+
+	convertAnsiQuotes := !dumpMetadataHasQuoteCharacter(dir)
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		logger.Debug("patchDumpDir: cannot read dir %s: %v", dir, err)
@@ -61,17 +106,144 @@ func PatchDumpDir(dir string) {
 			continue
 		}
 		fullPath := filepath.Join(dir, e.Name())
-		if err := patchSchemaFile(fullPath); err != nil {
+		if err := patchSchemaFile(fullPath, convertAnsiQuotes); err != nil {
 			logger.Debug("patchDumpDir: failed to patch %s: %v", fullPath, err)
 		}
 	}
+}
+
+// sanitizeSQLModePreamble rewrites every SQL file in dir (schema-create,
+// table schema, and data files alike) to strip any removedSQLModeValues
+// entry from its "/*!40101 SET SQL_MODE=...*/;" preamble. Only files that
+// actually need a change are touched — see patchSQLModeFile — and only
+// the header portion of each is ever decoded into memory, so this stays
+// cheap even for multi-gigabyte data files.
+func sanitizeSQLModePreamble(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		logger.Debug("sanitizeSQLModePreamble: cannot read dir %s: %v", dir, err)
+		return
+	}
+
+	for _, e := range entries {
+		name := e.Name()
+		isSQLFile := strings.HasSuffix(name, ".sql") || strings.HasSuffix(name, ".sql.gz") || strings.HasSuffix(name, ".sql.zst")
+		if e.IsDir() || !isSQLFile {
+			continue
+		}
+		fullPath := filepath.Join(dir, name)
+		if err := patchSQLModeFile(fullPath); err != nil {
+			logger.Debug("sanitizeSQLModePreamble: failed to patch %s: %v", fullPath, err)
+		}
+	}
+}
+
+// patchSQLModeFile strips any removedSQLModeValues entry from the
+// SET SQL_MODE preamble in the first sqlModePreambleWindow bytes of
+// path's decompressed content, streaming everything after that unchanged
+// — so even a multi-gigabyte data file is never fully read into memory.
+// Leaves the file completely untouched (no write at all) when its
+// preamble doesn't need a change.
+func patchSQLModeFile(path string) error {
+	format := detectCompression(path)
+
+	r, err := openCompressed(path)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	br := bufio.NewReaderSize(r, sqlModePreambleWindow)
+	head, _ := br.Peek(sqlModePreambleWindow)
+
+	patchedHead, changed := stripRemovedSQLModeValues(head)
+	if !changed {
+		return nil
+	}
+
+	tmp := path + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+
+	writeErr := func() error {
+		cw, err := newCompressWriter(out, format)
+		if err != nil {
+			return err
+		}
+		if _, err := cw.Write(patchedHead); err != nil {
+			cw.Close()
+			return err
+		}
+		if _, err := br.Discard(len(head)); err != nil && err != io.EOF {
+			cw.Close()
+			return err
+		}
+		if _, err := io.Copy(cw, br); err != nil {
+			cw.Close()
+			return err
+		}
+		return cw.Close()
+	}()
+
+	if writeErr != nil {
+		out.Close()
+		os.Remove(tmp)
+		return writeErr
+	}
+
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+
+	return os.Rename(tmp, path)
+}
+
+// stripRemovedSQLModeValues removes any removedSQLModeValues entry
+// (whichever of "V,", ",V", or a bare "V" — covering that value's
+// position in the comma-separated sql_mode list) from head, reporting
+// whether a change was made.
+func stripRemovedSQLModeValues(head []byte) ([]byte, bool) {
+	text := string(head)
+	changed := false
+	for _, v := range removedSQLModeValues {
+		switch {
+		case strings.Contains(text, v+","):
+			text = strings.Replace(text, v+",", "", 1)
+			changed = true
+		case strings.Contains(text, ","+v):
+			text = strings.Replace(text, ","+v, "", 1)
+			changed = true
+		case strings.Contains(text, v):
+			text = strings.Replace(text, v, "", 1)
+			changed = true
+		}
+	}
+	if !changed {
+		return head, false
+	}
+	return []byte(text), true
+}
+
+// dumpMetadataHasQuoteCharacter reports whether dir's own metadata file
+// contains mydumper 1.x's "[config]\nquote-character = ..." key — see
+// PatchDumpDir. A missing metadata file (or one without that key) means
+// an older mydumper produced this dump.
+func dumpMetadataHasQuoteCharacter(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "metadata")) // #nosec G304 -- dir is a dump directory dbtool created or downloaded itself
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "quote-character")
 }
 
 // patchSchemaFile reads a single schema file (compressed with gzip, zstd,
 // or plain), applies zero-date patches via patchSQL, and writes the result
 // back in-place — in whichever compression format it was read from — using
 // a temp file so the original is never left in a partial state.
-func patchSchemaFile(path string) error {
+func patchSchemaFile(path string, convertAnsiQuotes bool) error {
 	format := detectCompression(path)
 
 	r, err := openCompressed(path)
@@ -84,7 +256,7 @@ func patchSchemaFile(path string) error {
 		return err
 	}
 
-	patched := patchSQL(string(data))
+	patched := patchSQL(string(data), convertAnsiQuotes)
 	if patched == string(data) {
 		return nil // nothing to do
 	}
@@ -110,8 +282,10 @@ func patchSchemaFile(path string) error {
 }
 
 // patchSQL applies zero-date and invalid current_timestamp default fixes to a
-// block of SQL text.
-func patchSQL(sql string) string {
+// block of SQL text. convertAnsiQuotes additionally converts ANSI-style
+// double-quoted identifiers to MySQL backticks — see PatchDumpDir for why
+// this must only ever be true for a mydumper < 1.0 dump.
+func patchSQL(sql string, convertAnsiQuotes bool) string {
 	// Pass 1: NOT NULL DEFAULT '0000-...' → NULL DEFAULT NULL
 	result := reNotNullZeroDate.ReplaceAllString(sql, "NULL DEFAULT NULL")
 	// Pass 2: DEFAULT '0000-...' (already nullable) → DEFAULT NULL
@@ -121,9 +295,10 @@ func patchSQL(sql string) string {
 	result = reDateNotNullCurrentTs.ReplaceAllString(result, "${1} NULL DEFAULT NULL")
 	// Pass 4: date DEFAULT current_timestamp() (nullable) → date DEFAULT NULL
 	result = reDateCurrentTs.ReplaceAllString(result, "${1} DEFAULT NULL")
-	// Pass 5: identifiers in ANSI-style CREATE TABLE statements use double
-	// quotes, which default MySQL sessions parse as strings rather than names.
-	if reDoubleQuotedCreateTable.MatchString(result) {
+	// Pass 5 (mydumper < 1.0 dumps only): identifiers in ANSI-style CREATE
+	// TABLE statements use double quotes, which default MySQL sessions
+	// parse as strings rather than names.
+	if convertAnsiQuotes && reDoubleQuotedCreateTable.MatchString(result) {
 		result = convertDoubleQuotedIdentifiers(result)
 	}
 	return result

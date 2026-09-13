@@ -51,11 +51,10 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 	}
 	myloaderVersion := detectMyloaderVersion(myloaderPath)
 
-	// Patch schema files to handle zero-date defaults before myloader runs.
-	// myloader ≤ 0.10 (the Ubuntu default) lacks --init-command, so we cannot
-	// disable strict SQL mode at the session level.  Instead we rewrite any
-	// NOT NULL DEFAULT '0000-00-00...' column to NULL DEFAULT NULL and any
-	// DEFAULT '0000-00-00...' column to DEFAULT NULL directly in the dump files.
+	// Re-run the same dump-portability patches before myloader runs, as a
+	// safety net for a dump that never went through them at dump time (one
+	// taken by an older dbtool version, or downloaded from S3/Telegram) —
+	// see PatchDumpDir for what it does and doesn't touch.
 	PatchDumpDir(dir)
 
 	// Safety net: warn before loading data if this dump shows the same

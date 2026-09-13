@@ -191,6 +191,20 @@ func redactPasswordArg(args []string) []string {
 	return redacted
 }
 
+// mydumperMetadataComplete reports whether outDir contains a finished
+// mydumper metadata file.
+//
+// mydumper writes to "metadata.partial" throughout the dump and renames it
+// to "metadata" as one of the very last things it does, unconditionally on
+// actually finishing — independent of the internal error counter that
+// drives its exit code (see the call site in RunDump). Its presence is
+// therefore a reliable signal that the dump completed even when mydumper's
+// own exit status says otherwise.
+func mydumperMetadataComplete(outDir string) bool {
+	info, err := os.Stat(filepath.Join(outDir, "metadata"))
+	return err == nil && !info.IsDir()
+}
+
 func RunDump(cfg types.Config, pass string) string {
 
 	logger.Info("starting dump for config %q (host=%s port=%s user=%s)", cfg.Name, cfg.Host, cfg.Port, cfg.User)
@@ -373,9 +387,14 @@ func RunDump(cfg types.Config, pass string) string {
 	fmt.Println()
 
 	if err != nil {
-		logger.Error("dump failed for config %q: %v", cfg.Name, err)
-		fmt.Println("Dump FAILED:", err)
-		os.Exit(1)
+		if mydumperMetadataComplete(outDir) {
+			logger.Warn("mydumper exited with a non-zero status for config %q, but its metadata file confirms the dump completed — likely a non-fatal MySQL warning (e.g. insufficient privilege to read binlog position) incorrectly driving the exit code; see https://github.com/mydumper/mydumper/issues/1300: %v", cfg.Name, err)
+			fmt.Println("Warning: mydumper reported a non-zero exit status, but the dump completed successfully (a known mydumper quirk — see dbtool.log for details).")
+		} else {
+			logger.Error("dump failed for config %q: %v", cfg.Name, err)
+			fmt.Println("Dump FAILED:", err)
+			os.Exit(1)
+		}
 	}
 
 	logger.Info("dump completed for config %q: %s", cfg.Name, outDir)

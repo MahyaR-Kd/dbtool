@@ -10,6 +10,7 @@ A command-line tool for MySQL database backup and restore with SSH tunnelling su
 - **Scheduled jobs** — define dump, restore, or sync (dump + restore) jobs with cron expressions, run unattended via crontab
 - **Local or S3 storage** — dump output can go to a local directory or an S3 / S3-compatible bucket (MinIO, R2, Spaces, etc.)
 - **Telegram delivery** — optionally send every dump to a Telegram chat, auto-chunked to fit the Bot API's file-size limit
+- **Archive encryption** — optionally encrypt dumps sent to S3/Telegram with a password, so a leaked bucket or chat doesn't expose the data itself
 - **Dump validation safety net** — flags a known class of `mydumper` bug where a column's real value never makes it into the dump at all
 - **Encrypted credentials** — every password/key/token dbtool stores is encrypted at rest, never in plaintext
 - **Arrow-key picker** for every "pick one from a list" prompt, with automatic fallback to a plain numbered list for scripts
@@ -304,6 +305,10 @@ dbtool setting s3 config --storage-type s3 --bucket my-backups --region us-east-
 # Switch back to local storage
 dbtool setting s3 config --storage-type local
 
+# Encrypt every uploaded file with a password (optional)
+dbtool setting s3 config --storage-type s3 --bucket my-backups --region us-east-1 \
+  --access-key ... --secret-key ... --encryption-password 'correct horse battery staple'
+
 # Show the current storage configuration (keys are masked)
 dbtool setting s3 show
 ```
@@ -316,7 +321,18 @@ active and no `--dir`) lists available dumps in the bucket, downloads the
 one you pick to a temp directory, restores from it, then cleans the temp
 directory up. Picking `--region`: real AWS S3 needs the bucket's actual
 region; most S3-compatible services just need *some* non-empty string
-(Cloudflare R2 uses `auto`).
+(Cloudflare R2 uses `auto`; MinIO defaults to `us-east-1` unless configured
+otherwise).
+
+Setting `--encryption-password` encrypts each uploaded file (AES-256-GCM,
+key derived from the password via Argon2id — see
+[internal/archivecrypt](internal/archivecrypt)) before it leaves the
+machine; the local copy in `WorkDir` is left as plain mydumper output.
+`dbtool restore` decrypts automatically using the same configured
+password — nothing extra to do on restore. The password itself is stored
+encrypted at rest the same way the S3 access/secret keys are (see
+[Credential security](#credential-security)); leaving it blank disables
+encryption entirely.
 
 ### Route connections through a SOCKS5 proxy
 
@@ -342,6 +358,10 @@ dbtool setting telegram set --token 123456:ABC-DEF --chat-id 987654321
 # Optional: override the default 49 MB chunk size
 dbtool setting telegram set --token 123456:ABC-DEF --chat-id 987654321 --chunk-size-mb 40
 
+# Optional: encrypt the archive with a password before sending
+dbtool setting telegram set --token 123456:ABC-DEF --chat-id 987654321 \
+  --encryption-password 'correct horse battery staple'
+
 # Verify the bot token and chat ID work
 dbtool setting telegram test
 
@@ -359,6 +379,18 @@ dump name, total size, part count, and the command to reassemble them:
 
 ```bash
 cat <dump-name>.tar.part* > <dump-name>.tar && tar -xf <dump-name>.tar
+```
+
+If `--encryption-password` is set, the tar is encrypted (same AES-256-GCM +
+Argon2id scheme as S3 — see [internal/archivecrypt](internal/archivecrypt))
+before being split into chunks, and the reassemble command above gains an
+extra step, since Telegram delivery has no automated ingest path back into
+dbtool for restore to hook into:
+
+```bash
+cat <dump-name>.tar.enc.part* > <dump-name>.tar.enc \
+  && dbtool decrypt <dump-name>.tar.enc <dump-name>.tar \
+  && tar -xf <dump-name>.tar
 ```
 
 Telegram delivery is a supplementary channel: if it fails (bad token, network
@@ -389,6 +421,11 @@ Every dump/restore logs which `mydumper`/`myloader` build actually ran it (`usin
 ```bash
 # Show the current version
 dbtool --version
+
+# Decrypt an archive encrypted with the S3/Telegram encryption password
+# (S3 restores decrypt automatically; this is for a Telegram delivery
+# reassembled by hand — see "Deliver dumps to Telegram" above)
+dbtool decrypt <dump-name>.tar.enc <dump-name>.tar
 ```
 
 ## Data files
@@ -501,6 +538,7 @@ preventing accidental use of an unmanaged copy against real data.
 | `settings` | JSON-backed settings (`dbtool.settings`): work directory, storage backend, proxy, Telegram |
 | `secret` | AES-256-GCM encryption with a local auto-generated key — protects job passwords, S3 keys, the proxy password, and the Telegram token; no human interaction needed, so scheduled jobs keep working unattended |
 | `credvault` | A second, separate encryption scheme gated by a user-chosen master password — protects only the optional DB password saved on a connection config, since that's only ever needed for a dump/restore a human runs directly |
+| `archivecrypt` | A third, independent encryption scheme (AES-256-GCM over chunked streams, key derived via Argon2id) — protects the dump *contents* themselves when sent to S3/Telegram, using a password the operator sets and remembers |
 | `secureinput` | Masked (`*`-echoing) password prompts, with an env-var/flag resolution cascade and a plain-line fallback when stdin isn't a terminal |
 | `interactivelist` | Drives the real `fzf` binary for the arrow-key/fuzzy picker, with a plain numbered-list fallback when `fzf` is missing or stdin isn't a terminal |
 | `progress` | Parses `mydumper`/`myloader`'s verbose stderr output to drive a real progress bar instead of a spinner |

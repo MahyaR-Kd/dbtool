@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dbtool/internal/connection"
@@ -17,6 +18,24 @@ import (
 
 	pb "github.com/schollz/progressbar/v3"
 )
+
+// myloaderRestoreCompletedMarker is the message myloader logs unconditionally
+// as the very last thing it does in main() — after schema, data, checksums,
+// and cleanup have all finished — right before computing its exit code from
+// its internal error counter (see myloader.c: `exit_code = errors ? ... `).
+// That counter is incremented by any warning-level MySQL response (e.g. a
+// transient reconnect, an ignorable duplicate-key warning), the same
+// non-fatal-warnings-drive-exit-code bug as mydumper's own
+// (mydumper/mydumper#1300), just on the restore side. Seeing this marker in
+// myloader's stderr is therefore as reliable a completion signal as
+// mydumperMetadataComplete's metadata file is for dumps.
+const myloaderRestoreCompletedMarker = "Restore completed"
+
+// isMyloaderRestoreCompletedLine reports whether a single line of myloader's
+// stderr output is (or contains) its unconditional completion message.
+func isMyloaderRestoreCompletedLine(line string) bool {
+	return strings.Contains(line, myloaderRestoreCompletedMarker)
+}
 
 // countRestoredTables returns the number of table-schema files found in dir,
 // which equals the total number of tables in the dump directory.
@@ -131,15 +150,23 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 		}
 	}()
 
+	var restoreCompleted atomic.Bool
+	stderrDone := make(chan struct{})
+
 	// Goroutine: parse myloader verbose (-v 3) stderr lines.  Each "Thread N
 	// restoring …" line corresponds to one table chunk being loaded.  We count
 	// them to drive the real bar; the legacy [X/Y] handler is kept as fallback.
 	go func() {
+		defer close(stderrDone)
 		var stderrCount int
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
 			logger.Debug("[myloader stderr] %s", line)
+
+			if isMyloaderRestoreCompletedLine(line) {
+				restoreCompleted.Store(true)
+			}
 
 			if progress.ParseRestoringTable(line) {
 				barMu.Lock()
@@ -172,13 +199,20 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 	}()
 
 	if err := cmd.Wait(); err != nil {
+		<-stderrDone // ensure the final stderr line (if any) has been scanned
 		close(done)
-		logger.Error("restore failed for config %q: %v", cfg.Name, err)
-		fmt.Println("Command failed:", err)
-		os.Exit(1)
+		if restoreCompleted.Load() {
+			logger.Warn("myloader exited with a non-zero status for config %q, but it logged %q — likely a non-fatal MySQL warning incorrectly driving the exit code, the same class of bug as mydumper/mydumper#1300 on the restore side: %v", cfg.Name, myloaderRestoreCompletedMarker, err)
+			fmt.Println("Warning: myloader reported a non-zero exit status, but the restore completed successfully (a known myloader quirk — see dbtool.log for details).")
+		} else {
+			logger.Error("restore failed for config %q: %v", cfg.Name, err)
+			fmt.Println("Command failed:", err)
+			os.Exit(1)
+		}
+	} else {
+		<-stderrDone
+		close(done)
 	}
-
-	close(done)
 
 	barMu.Lock()
 	if realBar != nil {

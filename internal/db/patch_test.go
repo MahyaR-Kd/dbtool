@@ -323,6 +323,55 @@ func TestPatchDumpDir_ConvertsAnsiQuotesWithoutMydumper1xMetadata(t *testing.T) 
 	}
 }
 
+// TestDumpMetadataQuoteCharacterIsDoubleQuote guards the detection used by
+// RunRestore to decide whether a dump is at risk of the myloader
+// quote-character race (see myloaderRaceWorkaroundFile in restore.go).
+func TestDumpMetadataQuoteCharacterIsDoubleQuote(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata string
+		writeIt  bool
+		want     bool
+	}{
+		{
+			name:     "declares DOUBLE_QUOTE",
+			metadata: "[config]\nquote-character = DOUBLE_QUOTE\n",
+			writeIt:  true,
+			want:     true,
+		},
+		{
+			name:     "declares BACKTICK",
+			metadata: "[config]\nquote-character = BACKTICK\n",
+			writeIt:  true,
+			want:     false,
+		},
+		{
+			name:     "no quote-character key",
+			metadata: "#Started dump at: 2026-01-01 00:00:00\n",
+			writeIt:  true,
+			want:     false,
+		},
+		{
+			name:    "no metadata file at all",
+			writeIt: false,
+			want:    false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.writeIt {
+				if err := os.WriteFile(filepath.Join(dir, "metadata"), []byte(tc.metadata), 0644); err != nil {
+					t.Fatalf("write metadata: %v", err)
+				}
+			}
+			if got := dumpMetadataQuoteCharacterIsDoubleQuote(dir); got != tc.want {
+				t.Errorf("dumpMetadataQuoteCharacterIsDoubleQuote() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestStripRemovedSQLModeValues guards a real bug: mydumper copies the
 // source server's @@SQL_MODE verbatim into a preamble line written to
 // every file it produces. NO_AUTO_CREATE_USER is valid on MariaDB/older

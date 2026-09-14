@@ -597,6 +597,36 @@ its real value was never captured — restoring will silently apply the
 column's `DEFAULT` instead. This runs automatically after every dump and
 before every restore, and is also exposed directly via `dbtool validate`.
 
+### Known `mydumper`/`myloader` quirks worked around
+
+Both tools have a handful of confirmed upstream bugs that dbtool works
+around rather than surfacing as dump/restore failures — each verified
+against the tools' own source, not guessed from symptoms:
+
+- **False-failure exit codes.** Both `mydumper` and `myloader` drive their
+  process exit code from an internal counter that's incremented for any
+  warning-level event, not just genuine failures (`mydumper/mydumper#1300`
+  on the dump side; the same pattern, unreported, on the restore side).
+  `RunDump`/`RunRestore` treat a non-zero exit as a warning instead of a
+  hard failure when the tool's own output shows it actually finished (a
+  `metadata` file for `mydumper`, the `Restore completed` log line for
+  `myloader`).
+- **`myloader` quote-character race.** For a dump whose metadata declares
+  ANSI-style double-quoted identifiers (`quote-character = DOUBLE_QUOTE`),
+  `myloader`'s file-classification thread pool can validate a schema file
+  against its compiled-in backtick default before a different worker
+  thread has finished parsing that same metadata and updating what
+  character it should actually expect — aborting with `Identifier quote
+  character (\`) not found...`. This is a genuine, still-open race
+  (confirmed unchanged from the currently installed version through
+  upstream's latest release and master), distinct from the superficially
+  similar and already-fixed `mydumper/mydumper#1934`. `RunRestore` works
+  around it by creating an empty `metadata.partial.0` marker file before
+  `myloader` runs, for double-quote dumps only — `myloader`'s own code
+  treats that marker's mere presence (normally left behind by an
+  interrupted `--stream` dump) as a reason to fall back to a single
+  classification thread, which eliminates the race.
+
 ## Building
 
 ```bash

@@ -239,6 +239,29 @@ func dumpMetadataHasQuoteCharacter(dir string) bool {
 	return strings.Contains(string(data), "quote-character")
 }
 
+// dumpMetadataQuoteCharacterIsDoubleQuote reports whether dir's own
+// metadata file declares "quote-character = DOUBLE_QUOTE" — i.e. mydumper
+// detected ANSI_QUOTES active on the source and wrote every identifier in
+// every file of this dump using double quotes rather than backticks (see
+// dumpMetadataHasQuoteCharacter and PatchDumpDir for the write side of
+// this). Used by RunRestore to decide whether this dump is at risk of a
+// myloader race condition around applying that same setting — see
+// myloaderRaceWorkaroundFile.
+func dumpMetadataQuoteCharacterIsDoubleQuote(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "metadata")) // #nosec G304 -- dir is a dump directory dbtool created or downloaded itself
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "quote-character") {
+			continue
+		}
+		return strings.Contains(line, "DOUBLE_QUOTE")
+	}
+	return false
+}
+
 // patchSchemaFile reads a single schema file (compressed with gzip, zstd,
 // or plain), applies zero-date patches via patchSQL, and writes the result
 // back in-place — in whichever compression format it was read from — using

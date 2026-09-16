@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +37,36 @@ const myloaderRestoreCompletedMarker = "Restore completed"
 // stderr output is (or contains) its unconditional completion message.
 func isMyloaderRestoreCompletedLine(line string) bool {
 	return strings.Contains(line, myloaderRestoreCompletedMarker)
+}
+
+// myloaderReadOnlyErrorMarker is the substring of the MySQL error message
+// (ERROR 1290) myloader logs verbatim when the destination server has
+// read_only or super_read_only enabled and rejects a write statement.
+// RunRestore treats this specially — see restoreBackoff — instead of just
+// failing outright, since it can be a slow managed-MySQL failover or
+// maintenance event rather than a real, permanent misconfiguration.
+const myloaderReadOnlyErrorMarker = "running with the --read-only option"
+
+// isMyloaderReadOnlyErrorLine reports whether a line of myloader's stderr
+// output is a read-only rejection from the destination MySQL server.
+func isMyloaderReadOnlyErrorLine(line string) bool {
+	return strings.Contains(line, myloaderReadOnlyErrorMarker)
+}
+
+// restoreBackoff is how long restoreOneDatabase waits before each successive
+// retry of a database's restore after it fails because the destination was
+// read-only: 1, 2, 4, 8, 16 minutes, doubling each time — len(restoreBackoff)+1
+// is the most attempts any one database gets. A real, sustained failover on
+// a managed MySQL instance can take several minutes to resolve; a fixed
+// short timeout (or myloader's own single, zero-delay retry — see
+// restore_data_in_gstring_by_statement in src/myloader/myloader_restore.c)
+// gives up long before that.
+var restoreBackoff = []time.Duration{
+	1 * time.Minute,
+	2 * time.Minute,
+	4 * time.Minute,
+	8 * time.Minute,
+	16 * time.Minute,
 }
 
 // myloaderRaceWorkaroundFile is the filename myloader treats as a leftover
@@ -93,30 +124,85 @@ func applyMyloaderQuoteCharacterRaceWorkaround(dir string) {
 	}
 }
 
-// countRestoredTables returns the number of table-schema files found in dir,
-// which equals the total number of tables in the dump directory.
-func countRestoredTables(dir string) int {
+// countRestoredTables returns the number of table-schema files found in dir
+// belonging to db (or every table-schema file in dir, if db is "") — the
+// number of tables a myloader invocation scoped to db (via --source-db)
+// will restore.
+func countRestoredTables(dir, db string) int {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0
 	}
 	n := 0
 	for _, e := range entries {
-		if !e.IsDir() && isTableSchemaFile(e.Name()) {
-			n++
+		if e.IsDir() || !isTableSchemaFile(e.Name()) {
+			continue
 		}
+		if db != "" && !strings.HasPrefix(e.Name(), db+".") {
+			continue
+		}
+		n++
 	}
 	return n
+}
+
+// dumpSchemaCreateSuffixes are the file extensions mydumper writes a
+// per-database "<db>-schema-create.sql" file with — exactly one per source
+// database in the dump, regardless of its own compression setting.
+var dumpSchemaCreateSuffixes = []string{"-schema-create.sql", "-schema-create.sql.gz", "-schema-create.sql.zst"}
+
+// listDumpDatabases returns the distinct source database names present in
+// dir, sorted for a deterministic restore order — see RunRestore for why it
+// restores one database at a time instead of the whole dump in one
+// myloader invocation. Returns nil if dir has no recognizable
+// "<db>-schema-create.sql[.gz|.zst]" files (e.g. a dump taken with
+// --no-schemas, or from a mydumper old enough not to write them),  letting
+// RunRestore fall back to a single whole-dump invocation.
+func listDumpDatabases(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var dbs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		for _, suffix := range dumpSchemaCreateSuffixes {
+			if strings.HasSuffix(name, suffix) {
+				dbs = append(dbs, strings.TrimSuffix(name, suffix))
+				break
+			}
+		}
+	}
+	sort.Strings(dbs)
+	return dbs
 }
 
 func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 
 	logger.Info("starting restore into config %q (dir=%s overwrite-tables=%v)", cfg.Name, dir, overwriteTables)
 
+	// Log the configured destination before ApplyTunnels rewrites cfg.Host/
+	// cfg.Port to the local tunnel endpoint (127.0.0.1:<port>) — this is the
+	// only place the actual remote target (what an SSH tunnel forwards to,
+	// or the plain host:port with no tunnel) is visible at all. A restore
+	// that deterministically fails against one config but not others is as
+	// likely to be this address pointing at the wrong physical server as
+	// anything on the MySQL side.
+	if cfg.SSH {
+		logger.Debug("restore target for config %q: db=%s:%s via SSH tunnel %s@%s:%s", cfg.Name, cfg.Host, cfg.Port, cfg.SSHUser, cfg.SSHHost, cfg.SSHPort)
+	} else {
+		logger.Debug("restore target for config %q: db=%s:%s (no SSH tunnel)", cfg.Name, cfg.Host, cfg.Port)
+	}
+
 	s := settings.Load()
 
 	cfg, cleanup := connection.ApplyTunnels(cfg, s)
 	defer cleanup()
+
+	logger.Debug("restore target for config %q resolved to local endpoint %s:%s", cfg.Name, cfg.Host, cfg.Port)
 
 	myloaderPath, err := findExecutable("myloader")
 	if err != nil {
@@ -156,20 +242,107 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 		logger.Debug("myloader: overwrite-tables requested -> %s", strings.Join(overwriteArgs, " "))
 	}
 
+	logger.Debug("myloader base command: %s %s", myloaderPath, strings.Join(redactPasswordArg(args), " "))
+
+	// Restore one source database per myloader invocation (via --source-db)
+	// instead of the whole dump in one shot. myloader has no crash-safe
+	// checkpoint to resume from (its --resume mechanism only writes a
+	// marker on a graceful Ctrl+C shutdown, never on the g_critical abort a
+	// read-only destination triggers — see myloader_restore_job.c's
+	// "Writing resume.partial file" handler), so a database that already
+	// finished loading must never be re-run: dropping into that granularity
+	// is the only way to "resume from the failed part" rather than restart
+	// the whole restore after a failure well into it. A dump without the
+	// per-database schema-create files this relies on (see
+	// listDumpDatabases) falls back to one whole-dump invocation, matching
+	// the old, pre-batching behavior.
+	databases := listDumpDatabases(dir)
+	if len(databases) == 0 {
+		databases = []string{""}
+	}
+
+	for i, dbName := range databases {
+		dbArgs := args
+		if dbName != "" {
+			dbArgs = append(append([]string{}, args...), "-s", dbName)
+			fmt.Printf("Restoring database %q (%d of %d)…\n", dbName, i+1, len(databases))
+			logger.Info("restoring database %q (%d of %d) for config %q", dbName, i+1, len(databases), cfg.Name)
+		}
+
+		if err := restoreOneDatabase(cfg, pass, myloaderPath, dbArgs, dir, dbName); err != nil {
+			logger.Error("restore failed for config %q: %v", cfg.Name, err)
+			fmt.Println("Restore FAILED:", err)
+			os.Exit(1)
+		}
+	}
+
+	logger.Info("restore completed for config %q", cfg.Name)
+}
+
+// restoreOneDatabase runs myloader against dbArgs — already scoped to one
+// source database via "-s", or the whole dump if dbName is "" — retrying
+// with exponential backoff (see restoreBackoff) when it fails specifically
+// because the destination was read-only. Returns nil on success (including
+// the false-failure case handled inside runMyloaderOnce), or the final
+// error once retries are exhausted or a non-read-only failure occurs.
+func restoreOneDatabase(cfg types.Config, pass, myloaderPath string, dbArgs []string, dir, dbName string) error {
+	maxAttempts := len(restoreBackoff) + 1
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			logger.Info("retrying restore for config %q (attempt %d of %d)", cfg.Name, attempt, maxAttempts)
+		}
+
+		var readOnlyFailure bool
+		lastErr, readOnlyFailure = runMyloaderOnce(cfg, myloaderPath, dbArgs, dir, dbName)
+		if lastErr == nil {
+			return nil
+		}
+
+		if !readOnlyFailure || attempt == maxAttempts {
+			return lastErr
+		}
+
+		delay := restoreBackoff[attempt-1]
+		logger.Warn("restore failed for config %q because the destination briefly went read-only mid-restore; retrying in %s: %v", cfg.Name, delay, lastErr)
+		fmt.Printf("Warning: destination went read-only mid-restore. Retrying in %s…\n", delay)
+		if id, checkErr := checkDestinationServer(cfg, pass); checkErr == nil {
+			logger.Debug("destination check before retry for config %q: @@hostname=%s @@server_id=%s read_only=%s", cfg.Name, id.hostname, id.serverID, orNone(id.readOnlyVar))
+		}
+		time.Sleep(delay)
+	}
+	return lastErr
+}
+
+// runMyloaderOnce runs a single myloader invocation against dir (scoped to
+// dbName's tables if dbName is non-empty, matching the -s in args — dbName
+// is only needed here to size the progress bar), driving the progress bar
+// and log capture. A nil error means success — including the false-failure
+// case where myloader exited non-zero but its own "Restore completed"
+// marker confirms it actually finished (see isMyloaderRestoreCompletedLine).
+// A non-nil error's readOnly return is true when myloader aborted
+// specifically because the destination rejected a write with
+// "--read-only option" — see isMyloaderReadOnlyErrorLine — which
+// restoreOneDatabase uses to decide whether retrying is worth it.
+func runMyloaderOnce(cfg types.Config, myloaderPath string, args []string, dir, dbName string) (err error, readOnly bool) {
 	cmd := exec.Command(myloaderPath, args...)
 
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 
-	if err := cmd.Start(); err != nil {
-		logger.Error("restore failed to start for config %q: %v", cfg.Name, err)
-		fmt.Println("Failed:", err)
-		os.Exit(1)
+	if startErr := cmd.Start(); startErr != nil {
+		logger.Error("restore failed to start for config %q: %v", cfg.Name, startErr)
+		return fmt.Errorf("failed to start myloader: %w", startErr), false
 	}
 
 	// ---------------- progress tracking ----------------
 	// Count table files in the dump directory so we can show a real bar.
-	totalTables := countRestoredTables(dir)
+	totalTables := countRestoredTables(dir, dbName)
+	label := "Restoring…"
+	if dbName != "" {
+		label = fmt.Sprintf("Restoring %s…", dbName)
+	}
 
 	var (
 		barMu   sync.Mutex
@@ -180,9 +353,9 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 	done := make(chan struct{})
 
 	if totalTables > 0 {
-		realBar = progress.New(totalTables, "Restoring…")
+		realBar = progress.New(totalTables, label)
 	} else {
-		spinner = progress.SpinnerBar("Restoring…")
+		spinner = progress.SpinnerBar(label)
 	}
 
 	// Goroutine: animate the spinner or advance the real bar every 500 ms.
@@ -211,6 +384,7 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 	}()
 
 	var restoreCompleted atomic.Bool
+	var readOnlyDetected atomic.Bool
 	stderrDone := make(chan struct{})
 
 	// Goroutine: parse myloader verbose (-v 3) stderr lines.  Each "Thread N
@@ -226,6 +400,9 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 
 			if isMyloaderRestoreCompletedLine(line) {
 				restoreCompleted.Store(true)
+			}
+			if isMyloaderReadOnlyErrorLine(line) {
+				readOnlyDetected.Store(true)
 			}
 
 			if progress.ParseRestoringTable(line) {
@@ -249,7 +426,7 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 				_ = spinner.Finish()
 				fmt.Println()
 				spinner = nil
-				realBar = progress.New(tot, "Restoring…")
+				realBar = progress.New(tot, label)
 			}
 			if realBar != nil {
 				_ = realBar.Set(cur)
@@ -258,21 +435,9 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 		}
 	}()
 
-	if err := cmd.Wait(); err != nil {
-		<-stderrDone // ensure the final stderr line (if any) has been scanned
-		close(done)
-		if restoreCompleted.Load() {
-			logger.Warn("myloader exited with a non-zero status for config %q, but it logged %q — likely a non-fatal MySQL warning incorrectly driving the exit code, the same class of bug as mydumper/mydumper#1300 on the restore side: %v", cfg.Name, myloaderRestoreCompletedMarker, err)
-			fmt.Println("Warning: myloader reported a non-zero exit status, but the restore completed successfully (a known myloader quirk — see dbtool.log for details).")
-		} else {
-			logger.Error("restore failed for config %q: %v", cfg.Name, err)
-			fmt.Println("Command failed:", err)
-			os.Exit(1)
-		}
-	} else {
-		<-stderrDone
-		close(done)
-	}
+	waitErr := cmd.Wait()
+	<-stderrDone // ensure the final stderr line (if any) has been scanned
+	close(done)
 
 	barMu.Lock()
 	if realBar != nil {
@@ -283,5 +448,15 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 	barMu.Unlock()
 	fmt.Println()
 
-	logger.Info("restore completed for config %q", cfg.Name)
+	if waitErr == nil {
+		return nil, false
+	}
+
+	if restoreCompleted.Load() {
+		logger.Warn("myloader exited with a non-zero status for config %q, but it logged %q — likely a non-fatal MySQL warning incorrectly driving the exit code, the same class of bug as mydumper/mydumper#1300 on the restore side: %v", cfg.Name, myloaderRestoreCompletedMarker, waitErr)
+		fmt.Println("Warning: myloader reported a non-zero exit status, but the restore completed successfully (a known myloader quirk — see dbtool.log for details).")
+		return nil, false
+	}
+
+	return waitErr, readOnlyDetected.Load()
 }

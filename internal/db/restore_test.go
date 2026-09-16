@@ -107,6 +107,129 @@ func TestApplyMyloaderQuoteCharacterRaceWorkaround(t *testing.T) {
 	})
 }
 
+// TestIsMyloaderReadOnlyErrorLine guards the trigger for RunRestore's
+// wait-and-retry path: a destination that's briefly read-only (e.g. a
+// managed-MySQL failover or maintenance event) makes myloader abort with
+// this exact MySQL error text (ERROR 1290), which is otherwise
+// indistinguishable from any other fatal restore error without matching on
+// it specifically.
+func TestIsMyloaderReadOnlyErrorLine(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{
+			name: "real production log line",
+			line: "** (myloader:1090237): CRITICAL **: 09:58:08.075: Thread 2 using connection 194933 - ERROR 1290: Error occurs between lines: 1947 and 2103: The MySQL server is running with the --read-only option so it cannot execute this statement",
+			want: true,
+		},
+		{
+			name: "unrelated critical error",
+			line: "** (myloader:1090237): CRITICAL **: Thread 1 using connection 1 - ERROR 1146: Table 'foo.bar' doesn't exist",
+			want: false,
+		},
+		{
+			name: "empty line",
+			line: "",
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isMyloaderReadOnlyErrorLine(tc.line); got != tc.want {
+				t.Errorf("isMyloaderReadOnlyErrorLine(%q) = %v, want %v", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestListDumpDatabases guards the granularity RunRestore retries at: one
+// myloader invocation per source database (see restoreOneDatabase), so a
+// read-only failure well into a restore only has to redo the one database
+// in progress, not tables already safely committed in earlier ones.
+func TestListDumpDatabases(t *testing.T) {
+	t.Run("finds databases across compression formats", func(t *testing.T) {
+		dir := t.TempDir()
+		touchFiles(t, dir,
+			"accounting-schema-create.sql",
+			"accounting.credit_increases-schema.sql.zst",
+			"accounting.credit_increases.00000.sql.zst",
+			"orders-schema-create.sql.gz",
+			"orders.order_shipment_notes-schema.sql.gz",
+			"cms-schema-create.sql.zst",
+			"metadata",
+		)
+
+		got := listDumpDatabases(dir)
+		want := []string{"accounting", "cms", "orders"}
+		if !slicesEqual(got, want) {
+			t.Errorf("listDumpDatabases() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("no schema-create files returns nil", func(t *testing.T) {
+		dir := t.TempDir()
+		touchFiles(t, dir, "accounting.credit_increases-schema.sql", "metadata")
+
+		if got := listDumpDatabases(dir); got != nil {
+			t.Errorf("listDumpDatabases() = %v, want nil", got)
+		}
+	})
+
+	t.Run("empty directory returns nil", func(t *testing.T) {
+		if got := listDumpDatabases(t.TempDir()); got != nil {
+			t.Errorf("listDumpDatabases() = %v, want nil", got)
+		}
+	})
+}
+
+// TestCountRestoredTables guards the per-database table count RunRestore
+// sizes each database's progress bar with.
+func TestCountRestoredTables(t *testing.T) {
+	dir := t.TempDir()
+	touchFiles(t, dir,
+		"accounting.credit_increases-schema.sql.zst",
+		"accounting.invoice_adjustments-schema.sql.zst",
+		"orders.order_shipment_notes-schema.sql.gz",
+		"accounting-schema-create.sql",
+	)
+
+	if got := countRestoredTables(dir, ""); got != 3 {
+		t.Errorf("countRestoredTables(dir, \"\") = %d, want 3", got)
+	}
+	if got := countRestoredTables(dir, "accounting"); got != 2 {
+		t.Errorf("countRestoredTables(dir, \"accounting\") = %d, want 2", got)
+	}
+	if got := countRestoredTables(dir, "orders"); got != 1 {
+		t.Errorf("countRestoredTables(dir, \"orders\") = %d, want 1", got)
+	}
+	if got := countRestoredTables(dir, "nope"); got != 0 {
+		t.Errorf("countRestoredTables(dir, \"nope\") = %d, want 0", got)
+	}
+}
+
+func touchFiles(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0644); err != nil {
+			t.Fatalf("touch %s: %v", name, err)
+		}
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func writeMetadata(t *testing.T, dir, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "metadata"), []byte(content), 0644); err != nil {

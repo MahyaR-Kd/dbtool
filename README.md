@@ -113,13 +113,19 @@ dbtool config edit
 # Edit an existing config (non-interactive)
 dbtool config edit --name prod --host 10.0.0.2 --retention-days 7
 
+# Duplicate a config, review every copied field, and save it under a new name
+dbtool config duplicate
+
+# Opt one config out of Telegram delivery (default is true)
+dbtool config edit --name prod --send-telegram=false
+
 # Save this config's DB password so you're not asked for it on every dump/restore
 dbtool config add --name prod --host 10.0.0.1 --port 3306 --user root --password secret
 dbtool config edit --name prod --password newsecret   # change it
 dbtool config edit --name prod --password ""           # clear it
 ```
 
-A config stores: name, host, port, user, optional SSH tunnel settings, schemas/tables to ignore during dumps, dump retention days (`0` = keep forever), an optional `--no-locks` flag (below), and — if you choose to save one — a DB password.
+A config stores: name, host, port, user, optional SSH tunnel settings, schemas/tables to ignore during dumps, dump retention days (`0` = keep forever), an optional `--no-locks` flag (below), whether its dumps are sent to Telegram, and — if you choose to save one — a DB password. Telegram delivery defaults to enabled for every config and only runs while the global Telegram integration is enabled.
 
 When adding or editing a config interactively, dbtool connects to the database to list its schemas and asks how you want to choose which ones get dumped:
 
@@ -216,6 +222,23 @@ made before you last upgraded `mydumper` never went through the dump-time
 check with your current tooling. Catching it here, before the data actually
 lands, is the more important of the two spots this check runs in.
 
+When overwriting existing tables, dbtool uses a single schema worker
+(`--max-threads-for-schema-creation=1`) to avoid metadata-lock deadlocks
+between concurrent drops and creates of tables related by foreign keys.
+Data loading remains parallel. Pause applications using the destination
+during restore, since their transactions can also hold metadata locks.
+
+New local dumps are created in hidden staging directories and published by
+renaming only after successful completion. S3 uploads write a pending marker
+first and publish a completion marker last. Automatic restore selection skips
+pending backups. Older backups remain selectable when they contain finalized
+`metadata` and no pending marker.
+
+Scheduled jobs use process locks to skip overlapping runs, and restores sharing
+the same configured destination host and port are also locked. Read-only restore
+failures are retried only with table overwrite enabled; a partial restore without
+overwrite must be recovered manually.
+
 ### Check a dump directory directly
 
 ```bash
@@ -311,6 +334,13 @@ dbtool setting s3 config --storage-type s3 --bucket my-backups --region us-east-
 
 # Show the current storage configuration (keys are masked)
 dbtool setting s3 show
+
+# Verify write, read, and delete access with a temporary probe object
+dbtool setting s3 test
+
+# Temporarily disable/re-enable S3 without deleting its credentials
+dbtool setting s3 disable
+dbtool setting s3 enable
 ```
 
 `mydumper` always writes to the local work directory first (it's a local
@@ -341,6 +371,8 @@ dbtool setting proxy set --host 127.0.0.1 --port 1080
 dbtool setting proxy set --host 127.0.0.1 --port 1080 --user myuser --password secret
 
 dbtool setting proxy show
+dbtool setting proxy disable
+dbtool setting proxy enable
 dbtool setting proxy clear
 ```
 
@@ -367,6 +399,8 @@ dbtool setting telegram test
 
 # Show / remove the configuration
 dbtool setting telegram show
+dbtool setting telegram disable
+dbtool setting telegram enable
 dbtool setting telegram clear
 ```
 
@@ -500,6 +534,17 @@ order, to:
 So `dbtool job add --name nightly --type dump --schedule "0 2 * * *" --src-config prod`
 (no `--src-pass`) now prompts for the password instead of erroring out.
 
+
+New encrypted backups use format v2 with an authenticated end marker and bounded
+chunk lengths, so truncation at a chunk boundary is detected. Existing v1 backups
+remain readable, but their original format cannot detect missing final chunks.
+Older dbtool versions cannot decrypt v2 backups; update restore hosts first.
+
+Configuration and credential files are written atomically. Master-password changes
+journal the new config and verification record together; interrupted changes are
+completed automatically on the next access to dbtool storage. Invalid or unreadable
+credential keys cause an error and are never silently regenerated.
+
 ## Architecture
 
 dbtool is a thin orchestration layer, not a reimplementation of MySQL
@@ -603,14 +648,10 @@ Both tools have a handful of confirmed upstream bugs that dbtool works
 around rather than surfacing as dump/restore failures — each verified
 against the tools' own source, not guessed from symptoms:
 
-- **False-failure exit codes.** Both `mydumper` and `myloader` drive their
-  process exit code from an internal counter that's incremented for any
-  warning-level event, not just genuine failures (`mydumper/mydumper#1300`
-  on the dump side; the same pattern, unreported, on the restore side).
-  `RunDump`/`RunRestore` treat a non-zero exit as a warning instead of a
-  hard failure when the tool's own output shows it actually finished (a
-  `metadata` file for `mydumper`, the `Restore completed` log line for
-  `myloader`).
+Dump and restore require a successful tool exit. A finalized `metadata` file
+or a `Restore completed` message alone does not prove that every table,
+row, index, or constraint was restored successfully.
+
 - **`myloader` quote-character race.** For a dump whose metadata declares
   ANSI-style double-quoted identifiers (`quote-character = DOUBLE_QUOTE`),
   `myloader`'s file-classification thread pool can validate a schema file

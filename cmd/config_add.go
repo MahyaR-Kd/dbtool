@@ -22,6 +22,7 @@ var configAddIgnoredSchemas string
 var configAddIgnoredTables string
 var configAddNoLocks bool
 var configAddPassword string
+var configAddSendTelegram bool
 
 var configAddCmd = &cobra.Command{
 	Use:   "add",
@@ -39,6 +40,7 @@ var configAddCmd = &cobra.Command{
 			configAddIgnoredSchemas != "" ||
 			configAddIgnoredTables != "" ||
 			configAddPassword != "" ||
+			cmd.Flags().Changed("send-telegram") ||
 			cmd.Flags().Changed("no-locks")
 
 		var c types.Config
@@ -57,18 +59,19 @@ var configAddCmd = &cobra.Command{
 			}
 
 			c = types.Config{
-				Name:           configAddName,
-				Host:           configAddHost,
-				Port:           configAddPort,
-				User:           configAddUser,
-				SSH:            configAddSSH,
-				SSHHost:        configAddSSHHost,
-				SSHUser:        configAddSSHUser,
-				SSHPort:        configAddSSHPort,
-				IgnoredSchemas: parseCommaSeparated(configAddIgnoredSchemas),
-				IgnoredTables:  parseIgnoredTablesFlag(configAddIgnoredTables),
-				NoLocks:        configAddNoLocks,
-				Password:       configAddPassword,
+				Name:             configAddName,
+				Host:             configAddHost,
+				Port:             configAddPort,
+				User:             configAddUser,
+				SSH:              configAddSSH,
+				SSHHost:          configAddSSHHost,
+				SSHUser:          configAddSSHUser,
+				SSHPort:          configAddSSHPort,
+				IgnoredSchemas:   parseCommaSeparated(configAddIgnoredSchemas),
+				IgnoredTables:    parseIgnoredTablesFlag(configAddIgnoredTables),
+				NoLocks:          configAddNoLocks,
+				Password:         configAddPassword,
+				TelegramDisabled: !configAddSendTelegram,
 			}
 			if configAddRetentionDays >= 0 {
 				c.RetentionDays = configAddRetentionDays
@@ -77,7 +80,10 @@ var configAddCmd = &cobra.Command{
 			c = config.AskInteractive()
 		}
 
-		config.Save(c)
+		if err := config.Save(c); err != nil {
+			fmt.Println("Failed to save configs:", err)
+			return
+		}
 		fmt.Println("Saved")
 	},
 }
@@ -151,5 +157,6 @@ func init() {
 	configAddCmd.Flags().StringVar(&configAddIgnoredTables, "ignored-tables", "", "Per-schema ignored tables in format schema1:tbl1,tbl2;schema2:tbl3 (non-interactive)")
 	configAddCmd.Flags().BoolVar(&configAddNoLocks, "no-locks", false, "Pass --no-locks to mydumper (use when DB user lacks RELOAD privilege) (non-interactive)")
 	configAddCmd.Flags().StringVar(&configAddPassword, "password", "", "DB password to save, encrypted with your master password (optional, non-interactive)")
+	configAddCmd.Flags().BoolVar(&configAddSendTelegram, "send-telegram", true, "Send this config's dumps to Telegram when globally enabled")
 	configCmd.AddCommand(configAddCmd)
 }

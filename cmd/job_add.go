@@ -103,7 +103,10 @@ var jobAddCmd = &cobra.Command{
 			j = job.AskInteractive()
 		}
 
-		job.Save(j)
+		if err := job.Save(j); err != nil {
+			fmt.Println("Failed to save jobs:", err)
+			return
+		}
 		fmt.Println("Saved")
 	},
 }

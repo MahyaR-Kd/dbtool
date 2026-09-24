@@ -115,6 +115,7 @@ Non-interactive example:
 				os.Exit(1)
 			}
 		}
+		s.Telegram.Disabled = false
 
 		if err := settings.Save(s); err != nil {
 			logger.Error("failed to save telegram settings: %v", err)
@@ -132,10 +133,11 @@ var telegramShowCmd = &cobra.Command{
 	Short: "Show the current Telegram delivery configuration",
 	Run: func(cmd *cobra.Command, args []string) {
 		s := settings.Load()
-		if !s.Telegram.Enabled() {
+		if !s.Telegram.Configured() {
 			fmt.Println("No Telegram bot configured.")
 			return
 		}
+		fmt.Printf("Status:     %s\n", enabledLabel(s.Telegram.Enabled()))
 		fmt.Printf("Bot token:  %s\n", maskedPlaceholder)
 		fmt.Printf("Chat ID:    %s\n", s.Telegram.ChatID)
 		fmt.Printf("Chunk size: %d MB\n", s.Telegram.ChunkSizeBytes()/(1024*1024))
@@ -144,6 +146,22 @@ var telegramShowCmd = &cobra.Command{
 		}
 	},
 }
+
+var telegramEnableCmd = featureToggleCommand("enable", "Enable Telegram delivery", func(s *settings.Settings) (bool, string) {
+	if !s.Telegram.Configured() {
+		return false, "No Telegram bot configured. Run 'dbtool setting telegram set' first."
+	}
+	s.Telegram.Disabled = false
+	return true, "Telegram delivery enabled."
+})
+
+var telegramDisableCmd = featureToggleCommand("disable", "Disable Telegram delivery without removing its settings", func(s *settings.Settings) (bool, string) {
+	if !s.Telegram.Configured() {
+		return false, "No Telegram bot configured."
+	}
+	s.Telegram.Disabled = true
+	return true, "Telegram delivery disabled."
+})
 
 var telegramClearCmd = &cobra.Command{
 	Use:   "clear",
@@ -166,11 +184,14 @@ var telegramTestCmd = &cobra.Command{
 	Short: "Send a test message to verify the bot token and chat ID",
 	Run: func(cmd *cobra.Command, args []string) {
 		s := settings.Load()
-		if !s.Telegram.Enabled() {
+		if !s.Telegram.Configured() {
 			fmt.Println("No Telegram bot configured. Run 'dbtool setting telegram set' first.")
 			os.Exit(1)
 		}
-		if err := telegram.SendTestMessage(s.Telegram); err != nil {
+		// Testing validates the saved credentials even while routine delivery is disabled.
+		testConfig := s.Telegram
+		testConfig.Disabled = false
+		if err := telegram.SendTestMessage(testConfig); err != nil {
 			logger.Error("telegram test message failed: %v", err)
 			fmt.Println("Failed to send test message:", err)
 			os.Exit(1)
@@ -188,6 +209,7 @@ func init() {
 	telegramCmd.AddCommand(telegramShowCmd)
 	telegramCmd.AddCommand(telegramClearCmd)
 	telegramCmd.AddCommand(telegramTestCmd)
+	telegramCmd.AddCommand(telegramEnableCmd, telegramDisableCmd)
 	if installedInPath {
 		settingCmd.AddCommand(telegramCmd)
 	}

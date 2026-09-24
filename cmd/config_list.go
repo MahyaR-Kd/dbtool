@@ -57,6 +57,9 @@ func printConfigEntry(n int, c types.Config) {
 	if c.Password != "" {
 		status = append(status, "password saved")
 	}
+	if c.TelegramDisabled {
+		status = append(status, "Telegram off")
+	}
 	fmt.Printf("   %s\n", strings.Join(status, " · "))
 
 	if len(c.IgnoredSchemas) > 0 {

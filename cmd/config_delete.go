@@ -35,7 +35,10 @@ var deleteCmd = &cobra.Command{
 				return
 			}
 			configs = append(configs[:found], configs[found+1:]...)
-			config.Overwrite(configs)
+			if err := config.Overwrite(configs); err != nil {
+				fmt.Println("Failed to save configs:", err)
+				return
+			}
 			fmt.Println("Deleted successfully")
 			return
 		}
@@ -52,7 +55,10 @@ var deleteCmd = &cobra.Command{
 		}
 
 		configs = append(configs[:idx], configs[idx+1:]...)
-		config.Overwrite(configs)
+		if err := config.Overwrite(configs); err != nil {
+			fmt.Println("Failed to save configs:", err)
+			return
+		}
 
 		fmt.Println("Deleted successfully")
 	},

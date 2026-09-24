@@ -8,6 +8,7 @@ import (
 
 	"dbtool/internal/interactivelist"
 	"dbtool/internal/logger"
+	"dbtool/internal/s3store"
 	"dbtool/internal/secureinput"
 	"dbtool/internal/settings"
 
@@ -68,6 +69,7 @@ Non-interactive example:
 				s.StorageType = settings.StorageLocal
 			case string(settings.StorageS3):
 				s.StorageType = settings.StorageS3
+				s.S3.Disabled = false
 				if cmd.Flags().Changed("bucket") {
 					s.S3.Bucket = s3ConfigBucket
 				}
@@ -108,6 +110,7 @@ Non-interactive example:
 				case 1:
 					s.StorageType = settings.StorageS3
 					s.S3 = askS3Config(reader, s.S3)
+					s.S3.Disabled = false
 				}
 			}
 		}
@@ -122,6 +125,7 @@ Non-interactive example:
 		fmt.Println("Settings saved.")
 
 		if s.StorageType == settings.StorageS3 {
+			fmt.Printf("S3 status:   %s\n", enabledLabel(s.S3Enabled()))
 			fmt.Printf("S3 bucket:   %s\n", s.S3.Bucket)
 			fmt.Printf("S3 region:   %s\n", s.S3.Region)
 			fmt.Printf("S3 prefix:   %s\n", s.S3.Prefix)
@@ -142,6 +146,7 @@ var s3ShowCmd = &cobra.Command{
 		s := settings.Load()
 		fmt.Printf("Storage type: %s\n", s.StorageType)
 		if s.StorageType == settings.StorageS3 {
+			fmt.Printf("Status:       %s\n", enabledLabel(s.S3Enabled()))
 			fmt.Printf("Bucket:       %s\n", s.S3.Bucket)
 			fmt.Printf("Region:       %s\n", s.S3.Region)
 			fmt.Printf("Prefix:       %s\n", s.S3.Prefix)
@@ -153,6 +158,40 @@ var s3ShowCmd = &cobra.Command{
 				fmt.Println("Encryption:   enabled")
 			}
 		}
+	},
+}
+
+var s3EnableCmd = featureToggleCommand("enable", "Enable the saved S3 storage backend", func(s *settings.Settings) (bool, string) {
+	if !s.S3.Configured() {
+		return false, "S3 is not fully configured. Run 'dbtool setting s3 config' first."
+	}
+	s.StorageType = settings.StorageS3
+	s.S3.Disabled = false
+	return true, "S3 storage enabled."
+})
+
+var s3DisableCmd = featureToggleCommand("disable", "Disable S3 without removing its settings", func(s *settings.Settings) (bool, string) {
+	if !s.S3.Configured() {
+		return false, "No S3 configuration found."
+	}
+	s.S3.Disabled = true
+	return true, "S3 storage disabled; dumps will use local storage."
+})
+
+var s3TestCmd = &cobra.Command{
+	Use: "test", Short: "Verify S3 write, read, and delete access",
+	Run: func(cmd *cobra.Command, args []string) {
+		s := settings.Load()
+		if !s.S3.Configured() {
+			fmt.Println("S3 is not fully configured. Run 'dbtool setting s3 config' first.")
+			os.Exit(1)
+		}
+		if err := s3store.TestConnection(s.S3); err != nil {
+			logger.Error("S3 connection test failed: %v", err)
+			fmt.Println("S3 test failed:", err)
+			os.Exit(1)
+		}
+		fmt.Println("S3 test succeeded: write, read, and delete access confirmed.")
 	},
 }
 
@@ -269,6 +308,7 @@ func init() {
 	s3ConfigCmd.Flags().StringVar(&s3ConfigEncryptionPassword, "encryption-password", "", "Password to encrypt each uploaded file with (non-interactive; empty disables encryption)")
 	s3Cmd.AddCommand(s3ConfigCmd)
 	s3Cmd.AddCommand(s3ShowCmd)
+	s3Cmd.AddCommand(s3EnableCmd, s3DisableCmd, s3TestCmd)
 	if installedInPath {
 		settingCmd.AddCommand(s3Cmd)
 	}

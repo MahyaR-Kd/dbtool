@@ -88,6 +88,7 @@ Non-interactive example:
 				os.Exit(1)
 			}
 		}
+		s.Proxy.Disabled = false
 
 		if err := settings.Save(s); err != nil {
 			logger.Error("failed to save proxy settings: %v", err)
@@ -105,10 +106,11 @@ var proxyShowCmd = &cobra.Command{
 	Short: "Show the current SOCKS5 proxy configuration",
 	Run: func(cmd *cobra.Command, args []string) {
 		s := settings.Load()
-		if !s.Proxy.Enabled() {
+		if !s.Proxy.Configured() {
 			fmt.Println("No proxy configured.")
 			return
 		}
+		fmt.Printf("Status:     %s\n", enabledLabel(s.Proxy.Enabled()))
 		fmt.Printf("Proxy host: %s\n", s.Proxy.Host)
 		fmt.Printf("Proxy port: %s\n", s.Proxy.Port)
 		if s.Proxy.User != "" {
@@ -119,6 +121,22 @@ var proxyShowCmd = &cobra.Command{
 		}
 	},
 }
+
+var proxyEnableCmd = featureToggleCommand("enable", "Enable the saved SOCKS5 proxy", func(s *settings.Settings) (bool, string) {
+	if !s.Proxy.Configured() {
+		return false, "No proxy configured. Run 'dbtool setting proxy set' first."
+	}
+	s.Proxy.Disabled = false
+	return true, "Proxy enabled."
+})
+
+var proxyDisableCmd = featureToggleCommand("disable", "Disable the SOCKS5 proxy without removing its settings", func(s *settings.Settings) (bool, string) {
+	if !s.Proxy.Configured() {
+		return false, "No proxy configured."
+	}
+	s.Proxy.Disabled = true
+	return true, "Proxy disabled."
+})
 
 var proxyClearCmd = &cobra.Command{
 	Use:   "clear",
@@ -144,6 +162,7 @@ func init() {
 	proxyCmd.AddCommand(proxySetCmd)
 	proxyCmd.AddCommand(proxyShowCmd)
 	proxyCmd.AddCommand(proxyClearCmd)
+	proxyCmd.AddCommand(proxyEnableCmd, proxyDisableCmd)
 	if installedInPath {
 		settingCmd.AddCommand(proxyCmd)
 	}

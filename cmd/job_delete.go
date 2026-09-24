@@ -34,7 +34,10 @@ var jobDeleteCmd = &cobra.Command{
 				return
 			}
 			jobs = append(jobs[:found], jobs[found+1:]...)
-			job.Overwrite(jobs)
+			if err := job.Overwrite(jobs); err != nil {
+				fmt.Println("Failed to save jobs:", err)
+				return
+			}
 			fmt.Println("Deleted successfully")
 			return
 		}
@@ -51,7 +54,10 @@ var jobDeleteCmd = &cobra.Command{
 		}
 
 		jobs = append(jobs[:idx], jobs[idx+1:]...)
-		job.Overwrite(jobs)
+		if err := job.Overwrite(jobs); err != nil {
+			fmt.Println("Failed to save jobs:", err)
+			return
+		}
 
 		fmt.Println("Deleted successfully")
 	},

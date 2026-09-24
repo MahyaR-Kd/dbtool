@@ -39,7 +39,7 @@ var restoreCmd = &cobra.Command{
 
 		restoreDir := dir
 		if restoreDir == "" {
-			if s.StorageType == settings.StorageS3 {
+			if s.S3Enabled() {
 				// S3 mode: list available dumps from S3 and let the user pick one.
 				selectedDir, err := selectDumpFromS3(s)
 				if err != nil {
@@ -59,7 +59,7 @@ var restoreCmd = &cobra.Command{
 		db.RunRestore(cfg, pass, restoreDir, overwriteTables)
 
 		// If we downloaded from S3 to a temp dir, clean it up.
-		if s.StorageType == settings.StorageS3 && dir == "" {
+		if s.S3Enabled() && dir == "" {
 			logger.Debug("cleaning up S3 temp restore dir: %s", restoreDir)
 			if err := os.RemoveAll(restoreDir); err != nil {
 				logger.Error("failed to remove temp restore dir %s: %v", restoreDir, err)

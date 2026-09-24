@@ -95,7 +95,10 @@ var jobEditCmd = &cobra.Command{
 			}
 
 			jobs[found] = updated
-			job.Overwrite(jobs)
+			if err := job.Overwrite(jobs); err != nil {
+				fmt.Println("Failed to save jobs:", err)
+				return
+			}
 			fmt.Println("Updated successfully")
 			return
 		}
@@ -113,7 +116,10 @@ var jobEditCmd = &cobra.Command{
 
 		updated := job.EditInteractive(jobs[idx])
 		jobs[idx] = updated
-		job.Overwrite(jobs)
+		if err := job.Overwrite(jobs); err != nil {
+			fmt.Println("Failed to save jobs:", err)
+			return
+		}
 
 		fmt.Println("Updated successfully")
 	},

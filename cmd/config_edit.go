@@ -23,6 +23,7 @@ var configEditIgnoredSchemas string
 var configEditIgnoredTables string
 var configEditNoLocks bool
 var configEditPassword string
+var configEditSendTelegram bool
 
 var configEditCmd = &cobra.Command{
 	Use:   "edit",
@@ -93,13 +94,19 @@ var configEditCmd = &cobra.Command{
 			if cmd.Flags().Changed("password") {
 				updated.Password = configEditPassword
 			}
+			if cmd.Flags().Changed("send-telegram") {
+				updated.TelegramDisabled = !configEditSendTelegram
+			}
 
 			if updated.SSH && (updated.SSHHost == "" || updated.SSHUser == "" || updated.SSHPort == "") {
 				fmt.Println("SSH configs require SSH host, user, and port.")
 				return
 			}
 			configs[found] = updated
-			config.Overwrite(configs)
+			if err := config.Overwrite(configs); err != nil {
+				fmt.Println("Failed to save configs:", err)
+				return
+			}
 			fmt.Println("Updated successfully")
 			return
 		}
@@ -117,7 +124,10 @@ var configEditCmd = &cobra.Command{
 
 		updated := config.EditInteractive(configs[idx])
 		configs[idx] = updated
-		config.Overwrite(configs)
+		if err := config.Overwrite(configs); err != nil {
+			fmt.Println("Failed to save configs:", err)
+			return
+		}
 
 		fmt.Println("Updated successfully")
 	},
@@ -138,5 +148,6 @@ func init() {
 	configEditCmd.Flags().StringVar(&configEditIgnoredTables, "ignored-tables", "", "Per-schema ignored tables in format schema1:tbl1,tbl2;schema2:tbl3, empty clears (non-interactive)")
 	configEditCmd.Flags().BoolVar(&configEditNoLocks, "no-locks", false, "Enable/disable --no-locks for mydumper (non-interactive)")
 	configEditCmd.Flags().StringVar(&configEditPassword, "password", "", "New DB password to save, encrypted with your master password; empty clears it (non-interactive)")
+	configEditCmd.Flags().BoolVar(&configEditSendTelegram, "send-telegram", true, "Send this config's dumps to Telegram when globally enabled")
 	configCmd.AddCommand(configEditCmd)
 }

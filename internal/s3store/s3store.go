@@ -4,14 +4,17 @@ package s3store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"dbtool/internal/archivecrypt"
+	"dbtool/internal/backupstate"
 	"dbtool/internal/logger"
 	"dbtool/internal/settings"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -23,6 +26,52 @@ import (
 // to its key on upload) so DownloadDump knows to decrypt it — and strip
 // the suffix back off — on the way down.
 const encryptedSuffix = ".enc"
+
+// TestConnection verifies the configured credentials can write, read, and
+// delete a small object. The probe is isolated under the configured prefix.
+func TestConnection(cfg settings.S3Config) error {
+	client, err := newClient(cfg)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	prefix := strings.Trim(strings.TrimSpace(cfg.Prefix), "/")
+	key := ".dbtool-test-" + fmt.Sprint(time.Now().UnixNano())
+	if prefix != "" {
+		key = prefix + "/" + key
+	}
+	want := "dbtool s3 connection test\n"
+	if _, err = client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(cfg.Bucket), Key: aws.String(key), Body: strings.NewReader(want)}); err != nil {
+		return fmt.Errorf("write test object: %w", err)
+	}
+	deleted := false
+	defer func() {
+		if !deleted {
+			_, _ = client.DeleteObject(context.Background(), &s3.DeleteObjectInput{Bucket: aws.String(cfg.Bucket), Key: aws.String(key)})
+		}
+	}()
+	out, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(cfg.Bucket), Key: aws.String(key)})
+	if err != nil {
+		return fmt.Errorf("read test object: %w", err)
+	}
+	got, readErr := io.ReadAll(out.Body)
+	closeErr := out.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read test object body: %w", readErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close test object body: %w", closeErr)
+	}
+	if string(got) != want {
+		return fmt.Errorf("test object content did not match")
+	}
+	if _, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(cfg.Bucket), Key: aws.String(key)}); err != nil {
+		return fmt.Errorf("delete test object: %w", err)
+	}
+	deleted = true
+	return nil
+}
 
 // newClient builds an S3 client from the stored S3Config.
 func newClient(cfg settings.S3Config) (*s3.Client, error) {
@@ -66,11 +115,17 @@ func UploadDir(cfg settings.S3Config, localDir string) error {
 	dirName := filepath.Base(localDir)
 	keyPrefix := objectKey(cfg.Prefix, dirName)
 
-	return filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
+	if !backupstate.IsComplete(localDir) {
+		return fmt.Errorf("backup is not complete: %s", localDir)
+	}
+	if _, err := client.PutObject(context.Background(), &s3.PutObjectInput{Bucket: aws.String(cfg.Bucket), Key: aws.String(keyPrefix + backupstate.Pending), Body: strings.NewReader("pending\n")}); err != nil {
+		return err
+	}
+	if err := filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		if info.IsDir() || info.Name() == backupstate.Complete || info.Name() == backupstate.Pending {
 			return nil
 		}
 
@@ -87,7 +142,14 @@ func UploadDir(cfg settings.S3Config, localDir string) error {
 			return err
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	if _, err := client.PutObject(context.Background(), &s3.PutObjectInput{Bucket: aws.String(cfg.Bucket), Key: aws.String(keyPrefix + backupstate.Complete), Body: strings.NewReader("complete\n")}); err != nil {
+		return err
+	}
+	_, err = client.DeleteObject(context.Background(), &s3.DeleteObjectInput{Bucket: aws.String(cfg.Bucket), Key: aws.String(keyPrefix + backupstate.Pending)})
+	return err
 }
 
 // uploadFile opens a single local file and uploads it to S3, encrypting it
@@ -174,7 +236,13 @@ func ListDumps(cfg settings.S3Config) ([]string, error) {
 			name := strings.TrimPrefix(*cp.Prefix, prefix)
 			name = strings.TrimSuffix(name, "/")
 			if name != "" {
-				dumps = append(dumps, name)
+				complete, err := remoteDumpComplete(client, cfg.Bucket, *cp.Prefix)
+				if err != nil {
+					return nil, err
+				}
+				if complete {
+					dumps = append(dumps, name)
+				}
 			}
 		}
 	}
@@ -225,6 +293,9 @@ func DeleteDump(cfg settings.S3Config, dumpName string) error {
 // DownloadDump downloads all objects under <prefix>/<dumpName>/ from S3 into
 // destDir (which is created if it does not exist) and returns the local path.
 func DownloadDump(cfg settings.S3Config, dumpName, destDir string) (string, error) {
+	if dumpName == "." || dumpName == ".." || filepath.Base(dumpName) != dumpName || !filepath.IsLocal(dumpName) {
+		return "", fmt.Errorf("invalid dump name %q", dumpName)
+	}
 	client, err := newClient(cfg)
 	if err != nil {
 		return "", err
@@ -236,6 +307,13 @@ func DownloadDump(cfg settings.S3Config, dumpName, destDir string) (string, erro
 	}
 	s3Prefix := prefix + dumpName + "/"
 
+	complete, err := remoteDumpComplete(client, cfg.Bucket, s3Prefix)
+	if err != nil {
+		return "", err
+	}
+	if !complete {
+		return "", fmt.Errorf("S3 backup %q is not complete", dumpName)
+	}
 	localDumpDir := filepath.Join(destDir, dumpName)
 	if err := os.MkdirAll(localDumpDir, 0755); err != nil {
 		return "", fmt.Errorf("create local dir: %w", err)
@@ -246,6 +324,11 @@ func DownloadDump(cfg settings.S3Config, dumpName, destDir string) (string, erro
 		Prefix: aws.String(s3Prefix),
 	})
 
+	root, err := os.OpenRoot(localDumpDir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
 	downloaded := 0
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(context.Background())
@@ -267,8 +350,12 @@ func DownloadDump(cfg settings.S3Config, dumpName, destDir string) (string, erro
 				relPath = strings.TrimSuffix(relPath, encryptedSuffix)
 			}
 
-			localPath := filepath.Join(localDumpDir, filepath.FromSlash(relPath))
-			if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+			relative, err := safeObjectPath(relPath)
+			if err != nil {
+				return "", err
+			}
+			localPath := filepath.Join(localDumpDir, relative)
+			if err := mkdirParents(root, filepath.Dir(relative)); err != nil {
 				return "", fmt.Errorf("mkdir for %s: %w", localPath, err)
 			}
 
@@ -282,7 +369,7 @@ func DownloadDump(cfg settings.S3Config, dumpName, destDir string) (string, erro
 				return "", fmt.Errorf("download %s: %w", key, err)
 			}
 
-			f, err := os.Create(localPath) // #nosec G304 -- localPath is built via filepath.Join+filepath.FromSlash which sanitizes the S3 key's relative path and prevents directory traversal
+			f, err := root.Create(relative)
 			if err != nil {
 				out.Body.Close()
 				return "", fmt.Errorf("create %s: %w", localPath, err)
@@ -297,7 +384,10 @@ func DownloadDump(cfg settings.S3Config, dumpName, destDir string) (string, erro
 				_, copyErr = io.Copy(f, out.Body)
 			}
 			out.Body.Close()
-			f.Close()
+			closeErr := f.Close()
+			if copyErr == nil {
+				copyErr = closeErr
+			}
 			if copyErr != nil {
 				return "", fmt.Errorf("write %s: %w", localPath, copyErr)
 			}
@@ -337,4 +427,62 @@ func FindLatestDump(cfg settings.S3Config, configName string) (string, error) {
 	// the last entry is the most recent dump.
 	sort.Strings(matching)
 	return matching[len(matching)-1], nil
+}
+
+func safeObjectPath(path string) (string, error) {
+	relative := filepath.FromSlash(path)
+	if !filepath.IsLocal(relative) || filepath.Clean(relative) == "." {
+		return "", fmt.Errorf("unsafe S3 object path %q", path)
+	}
+	for _, part := range strings.Split(path, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("unsafe S3 object path %q", path)
+		}
+	}
+	return relative, nil
+}
+
+// Root operations also prevent pre-existing symlinks from escaping the download.
+func mkdirParents(root *os.Root, dir string) error {
+	if dir == "." {
+		return nil
+	}
+	path := ""
+	for _, part := range strings.Split(dir, string(filepath.Separator)) {
+		path = filepath.Join(path, part)
+		if err := root.Mkdir(path, 0755); err != nil && !os.IsExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func remoteObjectExists(client *s3.Client, bucket, key string) (bool, error) {
+	_, err := client.HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	if err == nil {
+		return true, nil
+	}
+	var response interface{ HTTPStatusCode() int }
+	if errors.As(err, &response) && response.HTTPStatusCode() == 404 {
+		return false, nil
+	}
+	return false, err
+}
+
+func remoteDumpComplete(client *s3.Client, bucket, prefix string) (bool, error) {
+	pending, err := remoteObjectExists(client, bucket, prefix+backupstate.Pending)
+	if err != nil || pending {
+		return false, err
+	}
+	complete, err := remoteObjectExists(client, bucket, prefix+backupstate.Complete)
+	if err != nil || complete {
+		return complete, err
+	}
+	for _, name := range []string{"metadata", "metadata.enc"} {
+		exists, err := remoteObjectExists(client, bucket, prefix+name)
+		if err != nil || exists {
+			return exists, err
+		}
+	}
+	return false, nil
 }

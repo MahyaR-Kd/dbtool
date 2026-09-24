@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"dbtool/internal/atomicfile"
+	"dbtool/internal/filelock"
 	"dbtool/internal/logger"
 	"dbtool/internal/paths"
 	"dbtool/internal/secret"
@@ -31,7 +33,9 @@ func Load() []Config {
 
 	if needsMigration {
 		logger.Info("jobs: migrating plaintext credentials to encrypted storage")
-		Overwrite(jobs)
+		if err := Overwrite(jobs); err != nil {
+			logger.Error("jobs migration failed: %v", err)
+		}
 	}
 
 	return jobs
@@ -93,69 +97,46 @@ func load() (jobs []Config, needsMigration bool) {
 
 // Save appends a new job config to the jobs file, encrypting SrcPassword and
 // DstPassword before they touch disk.
-func Save(j Config) {
-	path := jobFilePath()
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		fmt.Println("Failed to save job:", err)
-		return
+func Save(j Config) error {
+	if err := ValidateSchedule(j.Schedule); err != nil {
+		return err
 	}
-	// OpenFile's mode argument only applies when creating a new file; chmod
-	// explicitly so a pre-existing file with looser permissions (e.g. from a
-	// version predating credential storage) is tightened too.
-	if err := os.Chmod(path, 0600); err != nil {
-		logger.Error("Failed to set permissions on job file: %v", err)
-	}
-	defer func(f *os.File) {
-		err := f.Close()
-		if err != nil {
-			fmt.Println("Failed to close job file:", err)
-			logger.Error("Failed to close job file: %v", err)
-		}
-	}(f)
-
 	line, err := encodeLine(j)
 	if err != nil {
-		fmt.Println("Failed to encrypt job credentials:", err)
-		logger.Error("Failed to encrypt job credentials for %q: %v", j.Name, err)
-		return
+		return err
 	}
-	if _, err := f.WriteString(line); err != nil {
-		fmt.Println("Failed to write job:", err)
+	path := jobFilePath()
+	release, err := filelock.Acquire(filepath.Dir(path), "job-store", true)
+	if err != nil {
+		return err
 	}
+	defer release()
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return atomicfile.Write(path, append(data, []byte(line)...), 0600)
 }
 
-// Overwrite replaces the entire jobs file with the given list, encrypting
-// SrcPassword and DstPassword before they touch disk.
-func Overwrite(jobs []Config) {
-	path := jobFilePath()
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		fmt.Println("Failed to overwrite jobs file:", err)
-		return
-	}
-	if err := os.Chmod(path, 0600); err != nil {
-		logger.Error("Failed to set permissions on job file: %v", err)
-	}
-	defer func(f *os.File) {
-		err := f.Close()
-		if err != nil {
-			fmt.Println("Failed to close job file:", err)
-			logger.Error("Failed to close job file: %v", err)
-		}
-	}(f)
-
+func Overwrite(jobs []Config) error {
+	var data strings.Builder
 	for _, j := range jobs {
+		if err := ValidateSchedule(j.Schedule); err != nil {
+			return err
+		}
 		line, err := encodeLine(j)
 		if err != nil {
-			fmt.Println("Failed to encrypt job credentials:", err)
-			logger.Error("Failed to encrypt job credentials for %q: %v", j.Name, err)
-			continue
+			return err
 		}
-		if _, err := f.WriteString(line); err != nil {
-			fmt.Println("Failed to write job:", err)
-		}
+		data.WriteString(line)
 	}
+	path := jobFilePath()
+	release, err := filelock.Acquire(filepath.Dir(path), "job-store", true)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return atomicfile.Write(path, []byte(data.String()), 0600)
 }
 
 // encodeLine renders j as one pipe-delimited storage line with its

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"dbtool/internal/atomicfile"
 	"dbtool/internal/logger"
 	"dbtool/internal/paths"
 	"dbtool/internal/secret"
@@ -115,12 +116,5 @@ func Save(s Settings) error {
 		return err
 	}
 	path := settingsFilePath()
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return err
-	}
-	// os.WriteFile only applies the mode argument when creating a new file;
-	// for a pre-existing file (e.g. one left at the old 0644 from before
-	// credentials were stored here) it leaves permissions untouched. Chmod
-	// explicitly so upgrades always end up at 0600, not just fresh installs.
-	return os.Chmod(path, 0600)
+	return atomicfile.Write(path, data, 0600)
 }

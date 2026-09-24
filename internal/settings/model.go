@@ -17,6 +17,11 @@ type S3Config struct {
 	Prefix             string `json:"prefix"`
 	Endpoint           string `json:"endpoint"`                      // optional custom endpoint (e.g. MinIO)
 	EncryptionPassword string `json:"encryption_password,omitempty"` // optional: encrypts each uploaded file with this password
+	Disabled           bool   `json:"disabled,omitempty"`
+}
+
+func (s S3Config) Configured() bool {
+	return s.Bucket != "" && s.Region != "" && s.AccessKey != "" && s.SecretKey != ""
 }
 
 // EncryptionEnabled reports whether uploaded dump files should be
@@ -31,12 +36,15 @@ type ProxyConfig struct {
 	Port     string `json:"port"`
 	User     string `json:"user,omitempty"`
 	Password string `json:"password,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 // Enabled reports whether a proxy is configured (host and port are required).
 func (p ProxyConfig) Enabled() bool {
-	return p.Host != "" && p.Port != ""
+	return p.Configured() && !p.Disabled
 }
+
+func (p ProxyConfig) Configured() bool { return p.Host != "" && p.Port != "" }
 
 // DefaultTelegramChunkSizeMB is the chunk size used when TelegramConfig.ChunkSizeMB
 // is unset (0). It stays comfortably under the standard cloud Bot API's 50 MB
@@ -50,13 +58,16 @@ type TelegramConfig struct {
 	ChatID             string `json:"chat_id"`
 	ChunkSizeMB        int    `json:"chunk_size_mb,omitempty"`       // 0 = use DefaultTelegramChunkSizeMB
 	EncryptionPassword string `json:"encryption_password,omitempty"` // optional: encrypts the archive with this password before sending
+	Disabled           bool   `json:"disabled,omitempty"`
 }
 
 // Enabled reports whether Telegram delivery is configured (bot token and chat ID
 // are both required).
 func (t TelegramConfig) Enabled() bool {
-	return t.BotToken != "" && t.ChatID != ""
+	return t.Configured() && !t.Disabled
 }
+
+func (t TelegramConfig) Configured() bool { return t.BotToken != "" && t.ChatID != "" }
 
 // EncryptionEnabled reports whether the archive should be encrypted
 // before being sent to Telegram.
@@ -81,4 +92,8 @@ type Settings struct {
 	S3          S3Config       `json:"s3"`
 	Proxy       ProxyConfig    `json:"proxy,omitempty"`
 	Telegram    TelegramConfig `json:"telegram,omitempty"`
+}
+
+func (s Settings) S3Enabled() bool {
+	return s.StorageType == StorageS3 && s.S3.Configured() && !s.S3.Disabled
 }

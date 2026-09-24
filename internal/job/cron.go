@@ -10,73 +10,114 @@ import (
 
 	"dbtool/internal/config"
 	"dbtool/internal/db"
+	"dbtool/internal/filelock"
 	"dbtool/internal/logger"
+	"dbtool/internal/paths"
 	"dbtool/internal/s3store"
 	"dbtool/internal/settings"
 )
 
-// matchField returns true when the cron field matches val.
-// Supports: *, */n, a-b, a,b,c, and exact numbers.
-func matchField(field string, val int) bool {
-	if field == "*" {
-		return true
-	}
-
-	if strings.HasPrefix(field, "*/") {
-		n, err := strconv.Atoi(field[2:])
-		if err != nil {
-			return false
+// cronField supports lists, ranges, and positive steps with bounded values.
+func cronField(field string, val, min, max int) (bool, error) {
+	matched := false
+	for _, term := range strings.Split(field, ",") {
+		parts := strings.Split(term, "/")
+		if len(parts) > 2 {
+			return false, fmt.Errorf("invalid cron field %q", field)
 		}
-		return val%n == 0
-	}
-
-	if strings.Contains(field, "-") {
-		parts := strings.SplitN(field, "-", 2)
-		a, e1 := strconv.Atoi(parts[0])
-		b, e2 := strconv.Atoi(parts[1])
-		if e1 != nil || e2 != nil {
-			return false
+		step := 1
+		if len(parts) == 2 {
+			n, err := strconv.Atoi(parts[1])
+			if err != nil || n <= 0 {
+				return false, fmt.Errorf("invalid cron step %q", term)
+			}
+			step = n
 		}
-		return val >= a && val <= b
-	}
-
-	if strings.Contains(field, ",") {
-		for _, p := range strings.Split(field, ",") {
-			n, err := strconv.Atoi(strings.TrimSpace(p))
+		lo, hi := min, max
+		if parts[0] != "*" {
+			bounds := strings.Split(parts[0], "-")
+			if len(bounds) > 2 {
+				return false, fmt.Errorf("invalid cron range %q", term)
+			}
+			n, err := strconv.Atoi(bounds[0])
 			if err != nil {
-				continue
+				return false, fmt.Errorf("invalid cron value %q", term)
 			}
-			if n == val {
-				return true
+			lo = n
+			hi = n
+			if len(bounds) == 2 {
+				n, err := strconv.Atoi(bounds[1])
+				if err != nil {
+					return false, fmt.Errorf("invalid cron value %q", term)
+				}
+				hi = n
+			} else if len(parts) == 2 {
+				hi = max
 			}
 		}
-		return false
+		if lo < min || hi > max || lo > hi {
+			return false, fmt.Errorf("cron field out of range: %q", term)
+		}
+		if val >= lo && val <= hi && (val-lo)%step == 0 {
+			matched = true
+		}
 	}
-
-	n, err := strconv.Atoi(field)
-	if err != nil {
-		return false
-	}
-	return n == val
+	return matched, nil
 }
 
-// MatchSchedule returns true when the 5-field cron expression matches t.
-// Fields: minute hour day-of-month month day-of-week
-func MatchSchedule(schedule string, t time.Time) bool {
+func ValidateSchedule(schedule string) error {
 	fields := strings.Fields(schedule)
 	if len(fields) != 5 {
+		return fmt.Errorf("schedule must contain five cron fields")
+	}
+	limits := [][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 7}}
+	for i, field := range fields {
+		if _, err := cronField(field, limits[i][0], limits[i][0], limits[i][1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func MatchSchedule(schedule string, t time.Time) bool {
+	if ValidateSchedule(schedule) != nil {
 		return false
 	}
-
-	return matchField(fields[0], t.Minute()) &&
-		matchField(fields[1], t.Hour()) &&
-		matchField(fields[2], t.Day()) &&
-		matchField(fields[3], int(t.Month())) &&
-		matchField(fields[4], int(t.Weekday()))
+	fields := strings.Fields(schedule)
+	minute, _ := cronField(fields[0], t.Minute(), 0, 59)
+	hour, _ := cronField(fields[1], t.Hour(), 0, 23)
+	day, _ := cronField(fields[2], t.Day(), 1, 31)
+	month, _ := cronField(fields[3], int(t.Month()), 1, 12)
+	weekday, _ := cronField(fields[4], int(t.Weekday()), 0, 7)
+	if t.Weekday() == time.Sunday {
+		sunday, _ := cronField(fields[4], 7, 0, 7)
+		weekday = weekday || sunday
+	}
+	// Cron combines restricted day-of-month and day-of-week with OR.
+	days := day && weekday
+	if !strings.HasPrefix(fields[2], "*") && !strings.HasPrefix(fields[4], "*") {
+		days = day || weekday
+	}
+	return minute && hour && month && days
 }
 
 // RunJob executes a single job (dump, restore, or sync) using its stored configs and passwords.
 func RunJob(j Config) {
+	dir, err := paths.DbtoolDir()
+	if err != nil {
+		logger.Error("job lock directory: %v", err)
+		return
+	}
+	release, err := filelock.Acquire(dir, "job:"+j.Name, false)
+	if err != nil {
+		logger.Warn("skipping job %q: %v", j.Name, err)
+		return
+	}
+	defer release()
+	if err := ValidateSchedule(j.Schedule); err != nil {
+		logger.Error("invalid schedule for job %q: %v", j.Name, err)
+		return
+	}
 	fmt.Printf("[schedule] running job %q (%s)\n", j.Name, j.Type)
 	logger.Info("[schedule] running job %q (type=%s)", j.Name, j.Type)
 
@@ -92,7 +133,7 @@ func RunJob(j Config) {
 		var dir string
 		var tempDir string // non-empty when we downloaded from S3 and must clean up
 
-		if s.StorageType == settings.StorageS3 {
+		if s.S3Enabled() {
 			// Find the latest dump for this config in S3 and download it locally.
 			dumpName, err := s3store.FindLatestDump(s.S3, j.SrcConfigName)
 			if dumpName == "" || err != nil {
@@ -145,7 +186,7 @@ func RunJob(j Config) {
 		srcCfg := config.SelectByName(j.SrcConfigName)
 		dstCfg := config.SelectByName(j.DstConfigName)
 
-		if s.StorageType == settings.StorageS3 {
+		if s.S3Enabled() {
 			// Dump uploads to S3 and removes the local copy; download fresh for restore.
 			db.RunDump(srcCfg, j.SrcPassword)
 

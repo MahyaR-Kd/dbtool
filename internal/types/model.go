@@ -14,6 +14,9 @@ type Config struct {
 	IgnoredSchemas []string
 	IgnoredTables  map[string][]string
 	NoLocks        bool
+	// TelegramDisabled opts this config out of Telegram delivery. The negative
+	// form keeps existing configs enabled by default when this field is absent.
+	TelegramDisabled bool
 	// Password is the DB password saved for this config, if the user chose
 	// to save one. It is protected by a user-chosen master password (see
 	// internal/credvault), separate from the auto-generated key used for

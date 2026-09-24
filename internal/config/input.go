@@ -36,6 +36,9 @@ func AskInteractive() types.Config {
 	}
 
 	cfg.NoLocks = interactivelist.Confirm("Skip global lock (--no-locks)? Needed if user lacks RELOAD privilege", false)
+	if settings.Load().Telegram.Enabled() {
+		cfg.TelegramDisabled = !interactivelist.Confirm("Send this config's dumps to Telegram?", true)
+	}
 
 	pass, err := secureinput.ReadPassword(interactivelist.PromptLabel("DB Password (used to fetch schema list)", ""))
 	if err != nil {
@@ -79,6 +82,9 @@ func EditInteractive(cfg types.Config) types.Config {
 	}
 
 	cfg.NoLocks = interactivelist.Confirm("Skip global lock (--no-locks)?", cfg.NoLocks)
+	if settings.Load().Telegram.Enabled() {
+		cfg.TelegramDisabled = !interactivelist.Confirm("Send this config's dumps to Telegram?", !cfg.TelegramDisabled)
+	}
 
 	savedLabel := "no"
 	if cfg.Password != "" {

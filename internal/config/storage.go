@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"dbtool/internal/atomicfile"
 	"dbtool/internal/credvault"
+	"dbtool/internal/filelock"
 	"dbtool/internal/logger"
 	"dbtool/internal/paths"
 	"dbtool/internal/types"
@@ -17,7 +19,9 @@ import (
 func configFilePath() string {
 	dir, err := paths.DbtoolDir()
 	if err != nil {
-		return filepath.Join(os.ExpandEnv("$HOME"), ".dbtool", "dbtool.conf")
+		logger.Error("cannot open config storage: %v", err)
+		fmt.Println("Cannot open config storage:", err)
+		os.Exit(1)
 	}
 	return filepath.Join(dir, "dbtool.conf")
 }
@@ -83,6 +87,10 @@ func Load() []types.Config {
 		if len(parts) >= 14 {
 			c.Password = parts[13]
 		}
+		// field 15: per-config Telegram opt-out. Missing means send (legacy default).
+		if len(parts) >= 15 && parts[14] == "true" {
+			c.TelegramDisabled = true
+		}
 
 		configs = append(configs, c)
 	}
@@ -92,52 +100,49 @@ func Load() []types.Config {
 
 // Save appends a new config to the config file, encrypting its Password
 // field (if set) under the master password before it touches disk.
-func Save(c types.Config) {
+func Save(c types.Config) error {
 	line, err := encodeLine(c)
 	if err != nil {
-		fmt.Println("Failed to encrypt config password:", err)
-		logger.Error("failed to encrypt config password for %q: %v", c.Name, err)
-		return
+		return err
 	}
-
 	path := configFilePath()
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	release, err := filelock.Acquire(filepath.Dir(path), "config-store", true)
 	if err != nil {
-		fmt.Println("Failed to save config:", err)
-		return
+		return err
 	}
-	defer f.Close()
-	if err := os.Chmod(path, 0600); err != nil {
-		logger.Error("failed to set permissions on config file: %v", err)
+	defer release()
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
-
-	f.WriteString(line)
+	return atomicfile.Write(path, append(data, []byte(line)...), 0600)
 }
 
-// Overwrite replaces the entire config file with the given list, encrypting
-// each config's Password field (if set) under the master password before
-// it touches disk.
-func Overwrite(configs []types.Config) {
-	path := configFilePath()
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		fmt.Println("Failed to overwrite config file")
-		return
-	}
-	defer f.Close()
-	if err := os.Chmod(path, 0600); err != nil {
-		logger.Error("failed to set permissions on config file: %v", err)
-	}
-
+func encodeConfigs(configs []types.Config) ([]byte, error) {
+	var data strings.Builder
 	for _, c := range configs {
 		line, err := encodeLine(c)
 		if err != nil {
-			fmt.Println("Failed to encrypt config password:", err)
-			logger.Error("failed to encrypt config password for %q: %v", c.Name, err)
-			continue
+			return nil, err
 		}
-		f.WriteString(line)
+		data.WriteString(line)
 	}
+	return []byte(data.String()), nil
+}
+
+// Overwrite prepares every entry before replacing the existing file.
+func Overwrite(configs []types.Config) error {
+	data, err := encodeConfigs(configs)
+	if err != nil {
+		return err
+	}
+	path := configFilePath()
+	release, err := filelock.Acquire(filepath.Dir(path), "config-store", true)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return atomicfile.Write(path, data, 0600)
 }
 
 // ResetMasterPassword discards the master password's verification record
@@ -146,10 +151,6 @@ func Overwrite(configs []types.Config) {
 // ciphertext referencing a master password that no longer verifies against
 // anything.
 func ResetMasterPassword() error {
-	if err := credvault.Reset(); err != nil {
-		return err
-	}
-
 	configs := Load()
 	changed := false
 	for i := range configs {
@@ -159,9 +160,11 @@ func ResetMasterPassword() error {
 		}
 	}
 	if changed {
-		Overwrite(configs)
+		if err := Overwrite(configs); err != nil {
+			return err
+		}
 	}
-	return nil
+	return credvault.Reset()
 }
 
 // ChangeMasterPassword re-encrypts every saved config password under a
@@ -169,8 +172,8 @@ func ResetMasterPassword() error {
 // ResetMasterPassword, existing saved passwords survive. Prompts for the
 // current master password once (to verify and decrypt existing values) and
 // a new one once (create + confirm). Configs with no saved password are
-// left untouched. If it returns an error, dbtool.conf is not modified —
-// re-encryption happens entirely in memory before anything is written.
+// left untouched. Re-encryption is prepared in memory; a durable journal
+// recovers both files if persistence is interrupted.
 func ChangeMasterPassword() error {
 	configs := Load()
 
@@ -183,19 +186,30 @@ func ChangeMasterPassword() error {
 		}
 	}
 
-	reencrypted, err := credvault.Rotate(encrypted)
+	path := configFilePath()
+	release, err := filelock.Acquire(filepath.Dir(path), "config-store", true)
 	if err != nil {
 		return err
 	}
-
-	if len(idxs) == 0 {
-		return nil
-	}
-	for j, i := range idxs {
-		configs[i].Password = reencrypted[j]
-	}
-	Overwrite(configs)
-	return nil
+	defer release()
+	_, err = credvault.RotateWithCommit(encrypted, func(reencrypted []string, record []byte) error {
+		for j, i := range idxs {
+			configs[i].Password = reencrypted[j]
+		}
+		data, err := encodeConfigs(configs)
+		if err != nil {
+			return err
+		}
+		release, err := filelock.Acquire(filepath.Dir(path), "rotation-recovery", true)
+		if err != nil {
+			return err
+		}
+		defer release()
+		return atomicfile.WriteBatch(filepath.Join(filepath.Dir(path), ".rotation-journal"), []atomicfile.Entry{
+			{Name: "dbtool.conf", Data: data}, {Name: "dbtool.masterkey", Data: record},
+		})
+	})
+	return err
 }
 
 // encodeLine renders c as one pipe-delimited storage line, encrypting its
@@ -209,13 +223,13 @@ func encodeLine(c types.Config) (string, error) {
 		return "", err
 	}
 
-	return fmt.Sprintf("%s|%s|%s|%s|%t|%s|%s|%s|%s|%s|%d|%s|%t|%s\n",
+	return fmt.Sprintf("%s|%s|%s|%s|%t|%s|%s|%s|%s|%s|%d|%s|%t|%s|%t\n",
 		c.Name, c.Host, c.Port, c.User,
 		c.SSH, c.SSHHost, c.SSHUser, c.SSHPort, c.LocalPort,
 		strings.Join(c.IgnoredSchemas, ","), c.RetentionDays,
 		serializeIgnoredTables(c.IgnoredTables),
 		c.NoLocks,
-		encPassword), nil
+		encPassword, c.TelegramDisabled), nil
 }
 
 // serializeIgnoredTables encodes a map[schema][]table as

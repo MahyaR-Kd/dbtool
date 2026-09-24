@@ -224,22 +224,26 @@ func forward(client net.Conn, proxyHost, proxyPort, targetHost, targetPort, user
 		}
 	}(proxConn)
 
+	relay(client, proxConn)
+}
+
+func relay(client, proxConn net.Conn) {
 	done := make(chan struct{}, 2)
 	go func() {
+		defer func() { done <- struct{}{} }()
 		_, err := io.Copy(proxConn, client)
 		if err != nil {
 			logger.Error("SOCKS5 forward copy to proxy failed: %v", err)
 			return
 		}
-		done <- struct{}{}
 	}()
 	go func() {
+		defer func() { done <- struct{}{} }()
 		_, err := io.Copy(client, proxConn)
 		if err != nil {
 			logger.Error("SOCKS5 forward copy to client failed: %v", err)
 			return
 		}
-		done <- struct{}{}
 	}()
 	<-done
 }

@@ -1,7 +1,9 @@
 package credvault
 
 import (
+	"bytes"
 	"errors"
+	"os"
 	"testing"
 )
 
@@ -376,5 +378,31 @@ func TestRotate_EmptyInputStillChangesPassword(t *testing.T) {
 	}
 	if len(rotated) != 0 {
 		t.Errorf("got %d values, want 0", len(rotated))
+	}
+}
+
+func TestFailedRotationCommitPreservesOldPassword(t *testing.T) {
+	isolate(t)
+	withFakeReader(t, fakeReader(t, "old", "old"))
+	ct := mustEncrypt(t, "database secret")
+	path, err := masterKeyFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withFakeReader(t, fakeReader(t, "old", "new", "new"))
+	want := errors.New("disk failure")
+	if _, err := RotateWithCommit([]string{ct}, func([]string, []byte) error { return want }); !errors.Is(err, want) {
+		t.Fatalf("got %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("verification record changed on failure")
+	}
+	if got, err := Decrypt(ct); err != nil || got != "database secret" {
+		t.Fatalf("old credential lost: %s %v", got, err)
 	}
 }

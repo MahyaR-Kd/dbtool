@@ -22,6 +22,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"dbtool/internal/atomicfile"
+	"dbtool/internal/filelock"
 	"dbtool/internal/paths"
 )
 
@@ -38,21 +40,38 @@ func keyFilePath() (string, error) {
 
 // loadOrCreateKey returns the local AES-256 key used to encrypt credential
 // fields at rest, generating and persisting a new random one on first use.
-func loadOrCreateKey() ([]byte, error) {
+func loadOrCreateKey() ([]byte, error) { return loadKey(true) }
+
+func loadKey(create bool) ([]byte, error) {
 	path, err := keyFilePath()
 	if err != nil {
 		return nil, fmt.Errorf("locate key file: %w", err)
 	}
 
-	if data, err := os.ReadFile(path); err == nil && len(data) == keySize {
+	release, err := filelock.Acquire(filepath.Dir(path), "credential-key", true)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if len(data) != keySize {
+			return nil, fmt.Errorf("invalid encryption key length: %d", len(data))
+		}
 		return data, nil
 	}
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read encryption key: %w", err)
+	}
 
+	if !create {
+		return nil, fmt.Errorf("encryption key is missing: %s", path)
+	}
 	key := make([]byte, keySize)
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("generate encryption key: %w", err)
 	}
-	if err := os.WriteFile(path, key, 0600); err != nil {
+	if err := atomicfile.Write(path, key, 0600); err != nil {
 		return nil, fmt.Errorf("write key file %s: %w", path, err)
 	}
 	return key, nil

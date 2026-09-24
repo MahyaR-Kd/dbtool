@@ -20,7 +20,7 @@ const magicPrefix = "enc:v1:"
 // Encrypt returns an opaque, magic-prefixed, base64-encoded ciphertext for
 // plaintext using AES-256-GCM with a random nonce.
 func Encrypt(plaintext string) (string, error) {
-	gcm, err := newGCM()
+	gcm, err := newGCM(true)
 	if err != nil {
 		return "", err
 	}
@@ -45,7 +45,7 @@ func Decrypt(value string) (string, error) {
 		return "", fmt.Errorf("decode ciphertext: %w", err)
 	}
 
-	gcm, err := newGCM()
+	gcm, err := newGCM(false)
 	if err != nil {
 		return "", err
 	}
@@ -63,8 +63,8 @@ func Decrypt(value string) (string, error) {
 	return string(plaintext), nil
 }
 
-func newGCM() (cipher.AEAD, error) {
-	key, err := loadOrCreateKey()
+func newGCM(create bool) (cipher.AEAD, error) {
+	key, err := loadKey(create)
 	if err != nil {
 		return nil, err
 	}

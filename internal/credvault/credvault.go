@@ -35,6 +35,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
+	"dbtool/internal/atomicfile"
 	"dbtool/internal/interactivelist"
 	"dbtool/internal/paths"
 	"dbtool/internal/secureinput"
@@ -119,13 +120,21 @@ func Reset() error {
 // a passwd-style "change password" flow always re-asks the current one)
 // and then a new one exactly once (create + confirm).
 //
-// Returns the re-encrypted values in the same order and positions as
-// encryptedValues. If it returns an error, the verification record may
-// already have been replaced (setup() persists as its last step and
-// essentially cannot fail afterward) but none of the returned values
-// should be trusted — callers must not persist anything from a
-// non-nil-error return.
+// Returns the re-encrypted values only after persistence succeeds. Config
+// storage uses RotateWithCommit to journal ciphertexts and the record together.
 func Rotate(encryptedValues []string) ([]string, error) {
+	return RotateWithCommit(encryptedValues, func(_ []string, record []byte) error {
+		path, err := masterKeyFilePath()
+		if err != nil {
+			return err
+		}
+		return atomicfile.Write(path, record, 0600)
+	})
+}
+
+// RotateWithCommit prepares the complete rotation before the caller persists
+// the new ciphertexts and verification record as a recoverable update.
+func RotateWithCommit(encryptedValues []string, commit func([]string, []byte) error) ([]string, error) {
 	if !IsConfigured() {
 		return nil, errors.New("no master password is set up yet — nothing to change")
 	}
@@ -148,14 +157,10 @@ func Rotate(encryptedValues []string) ([]string, error) {
 	}
 
 	fmt.Println("Current master password verified. Choose a new one.")
-	newKey, err := createNewPassword()
+	newKey, record, err := prepareNewPassword()
 	if err != nil {
 		return nil, fmt.Errorf("set new master password: %w", err)
 	}
-
-	cacheMu.Lock()
-	cachedKey = newKey
-	cacheMu.Unlock()
 
 	out := make([]string, len(plaintexts))
 	for i, pt := range plaintexts {
@@ -168,6 +173,16 @@ func Rotate(encryptedValues []string) ([]string, error) {
 		}
 		out[i] = ct
 	}
+	recordData, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := commit(out, recordData); err != nil {
+		return nil, err
+	}
+	cacheMu.Lock()
+	cachedKey = newKey
+	cacheMu.Unlock()
 	return out, nil
 }
 
@@ -190,10 +205,22 @@ func setup() ([]byte, error) {
 // any context-appropriate message beforehand (first-time setup vs. a
 // deliberate change of an existing password read very differently).
 func createNewPassword() ([]byte, error) {
+	key, record, err := prepareNewPassword()
+	if err != nil {
+		return nil, err
+	}
+	if err := persist(record); err != nil {
+		return nil, err
+	}
+	fmt.Println("Master password set.")
+	return key, nil
+}
+
+func prepareNewPassword() ([]byte, verificationRecord, error) {
 	for {
 		p1, err := readPasswordFunc(interactivelist.PromptLabel("Create a master password", ""))
 		if err != nil {
-			return nil, err
+			return nil, verificationRecord{}, err
 		}
 		if p1 == "" {
 			fmt.Println("Master password cannot be empty.")
@@ -201,7 +228,7 @@ func createNewPassword() ([]byte, error) {
 		}
 		p2, err := readPasswordFunc(interactivelist.PromptLabel("Confirm master password", ""))
 		if err != nil {
-			return nil, err
+			return nil, verificationRecord{}, err
 		}
 		if p1 != p2 {
 			fmt.Println("Passwords did not match. Try again.")
@@ -210,24 +237,16 @@ func createNewPassword() ([]byte, error) {
 
 		salt := make([]byte, saltLen)
 		if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-			return nil, fmt.Errorf("generate salt: %w", err)
+			return nil, verificationRecord{}, fmt.Errorf("generate salt: %w", err)
 		}
 		key := deriveKey(p1, salt)
 
 		checkCT, err := encryptWithKey(key, checkPlaintext)
 		if err != nil {
-			return nil, err
+			return nil, verificationRecord{}, err
 		}
 
-		if err := persist(verificationRecord{
-			Salt:  base64.StdEncoding.EncodeToString(salt),
-			Check: checkCT,
-		}); err != nil {
-			return nil, err
-		}
-
-		fmt.Println("Master password set.")
-		return key, nil
+		return key, verificationRecord{Salt: base64.StdEncoding.EncodeToString(salt), Check: checkCT}, nil
 	}
 }
 
@@ -240,13 +259,7 @@ func persist(rec verificationRecord) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return err
-	}
-	// WriteFile's mode argument only applies when creating a new file; chmod
-	// explicitly so a pre-existing file (e.g. left over from a Reset that
-	// failed partway) ends up 0600 regardless.
-	return os.Chmod(path, 0600)
+	return atomicfile.Write(path, data, 0600)
 }
 
 func loadRecord() (verificationRecord, []byte, error) {

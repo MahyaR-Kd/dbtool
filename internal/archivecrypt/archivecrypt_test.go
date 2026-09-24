@@ -122,3 +122,57 @@ func TestEncrypt_SamePlaintextProducesDifferentCiphertext(t *testing.T) {
 		t.Error("two encryptions of the same plaintext under the same password produced identical ciphertext (salt/nonce not varying per stream)")
 	}
 }
+
+func TestDecryptRejectsTruncationAtChunkBoundary(t *testing.T) {
+	var encrypted bytes.Buffer
+	if err := EncryptStream(&encrypted, bytes.NewReader(bytes.Repeat([]byte("x"), chunkSize+100)), "pw"); err != nil {
+		t.Fatal(err)
+	}
+	data := encrypted.Bytes()
+	end := len(magic) + saltLen + 4 + chunkSize + 16
+	if err := DecryptStream(io.Discard, bytes.NewReader(data[:end]), "pw"); !errors.Is(err, ErrDecryptFailed) {
+		t.Fatalf("truncated archive accepted: %v", err)
+	}
+	if err := DecryptStream(io.Discard, bytes.NewReader(data[:len(magic)+saltLen]), "pw"); !errors.Is(err, ErrDecryptFailed) {
+		t.Fatalf("header-only archive accepted: %v", err)
+	}
+}
+
+func TestDecryptRejectsOversizedChunkAndTrailingData(t *testing.T) {
+	var encrypted bytes.Buffer
+	if err := EncryptStream(&encrypted, bytes.NewReader(nil), "pw"); err != nil {
+		t.Fatal(err)
+	}
+	data := append([]byte(nil), encrypted.Bytes()...)
+	for i := len(magic) + saltLen; i < len(magic)+saltLen+4; i++ {
+		data[i] = 0xff
+	}
+	if err := DecryptStream(io.Discard, bytes.NewReader(data), "pw"); !errors.Is(err, ErrDecryptFailed) {
+		t.Fatalf("oversized chunk accepted: %v", err)
+	}
+	data = append(encrypted.Bytes(), 1)
+	if err := DecryptStream(io.Discard, bytes.NewReader(data), "pw"); !errors.Is(err, ErrDecryptFailed) {
+		t.Fatalf("trailing data accepted: %v", err)
+	}
+}
+
+func TestLegacyArchiveRemainsReadable(t *testing.T) {
+	salt := make([]byte, saltLen)
+	gcm, err := newGCM("pw", salt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed := gcm.Seal(nil, chunkNonce(0), []byte("old backup"), nil)
+	var encrypted bytes.Buffer
+	encrypted.WriteString(legacyMagic)
+	encrypted.Write(salt)
+	encrypted.Write([]byte{0, 0, 0, byte(len(sealed))})
+	encrypted.Write(sealed)
+	var out bytes.Buffer
+	if err := DecryptStream(&out, bytes.NewReader(encrypted.Bytes()), "pw"); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "old backup" {
+		t.Fatal(out.String())
+	}
+}

@@ -1,6 +1,10 @@
 package secret
 
-import "testing"
+import (
+	"bytes"
+	"os"
+	"testing"
+)
 
 // isolate points HOME (and USERPROFILE, for Windows) at a fresh temp dir so
 // key generation never touches the real ~/.dbtool on the machine running
@@ -128,5 +132,66 @@ func TestKeyPersistsAcrossCalls(t *testing.T) {
 	}
 	if pt != "value-a" {
 		t.Errorf("got %q, want %q", pt, "value-a")
+	}
+}
+
+func TestInvalidKeyIsNotReplaced(t *testing.T) {
+	isolate(t)
+	path, err := keyFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("broken key")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Encrypt("secret"); err == nil {
+		t.Fatal("invalid key accepted")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatal("key was replaced")
+	}
+}
+
+func TestConcurrentFirstUseSharesOneKey(t *testing.T) {
+	isolate(t)
+	results := make(chan []byte, 16)
+	errs := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		go func() { key, err := loadOrCreateKey(); results <- key; errs <- err }()
+	}
+	var first []byte
+	for i := 0; i < 16; i++ {
+		key := <-results
+		if first == nil {
+			first = key
+		}
+		if !bytes.Equal(first, key) {
+			t.Fatal("concurrent key mismatch")
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestDecryptDoesNotCreateMissingKey(t *testing.T) {
+	isolate(t)
+	stored, err := Encrypt("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := keyFilePath()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decrypt(stored); err == nil {
+		t.Fatal("missing key accepted")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("decrypt recreated key: %v", err)
 	}
 }

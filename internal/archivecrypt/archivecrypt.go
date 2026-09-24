@@ -10,7 +10,8 @@
 //
 // Format: an 8-byte magic/version marker, a 16-byte random salt (fresh
 // per encrypted stream), then a sequence of AES-256-GCM-sealed chunks
-// (each length-prefixed), so arbitrarily large archives can be encrypted
+// (each length-prefixed), ending in an authenticated empty chunk. Legacy v1
+// archives remain readable, but lack that completion check. Large archives can be encrypted
 // and decrypted without holding the whole file in memory. The key is
 // derived from the password and that salt via Argon2id (the same
 // parameters internal/credvault uses). Each chunk's nonce is a simple
@@ -32,9 +33,10 @@ import (
 )
 
 const (
-	magic   = "DBTLENC1"
-	saltLen = 16
-	keyLen  = 32 // AES-256
+	magic       = "DBTLENC2"
+	legacyMagic = "DBTLENC1"
+	saltLen     = 16
+	keyLen      = 32 // AES-256
 	// chunkSize is the plaintext size per sealed chunk. 1 MiB keeps
 	// memory use low for multi-GB dumps while keeping per-chunk framing
 	// overhead (4-byte length prefix + 16-byte GCM tag) negligible.
@@ -104,7 +106,7 @@ func EncryptStream(w io.Writer, r io.Reader, password string) error {
 	for {
 		n, readErr := io.ReadFull(r, buf)
 		if n > 0 {
-			ciphertext := gcm.Seal(nil, chunkNonce(counter), buf[:n], nil)
+			ciphertext := gcm.Seal(nil, chunkNonce(counter), buf[:n], []byte(magic))
 			var lenBuf [4]byte
 			binary.BigEndian.PutUint32(lenBuf[:], uint32(len(ciphertext)))
 			if _, err := w.Write(lenBuf[:]); err != nil {
@@ -116,7 +118,15 @@ func EncryptStream(w io.Writer, r io.Reader, password string) error {
 			counter++
 		}
 		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-			return nil
+			// An authenticated empty chunk terminates v2, including empty archives.
+			final := gcm.Seal(nil, chunkNonce(counter), nil, []byte(magic))
+			var length [4]byte
+			binary.BigEndian.PutUint32(length[:], uint32(len(final)))
+			if _, err := w.Write(length[:]); err != nil {
+				return err
+			}
+			_, err := w.Write(final)
+			return err
 		}
 		if readErr != nil {
 			return readErr
@@ -132,7 +142,8 @@ func DecryptStream(w io.Writer, r io.Reader, password string) error {
 	if _, err := io.ReadFull(r, header); err != nil {
 		return ErrInvalidFormat
 	}
-	if string(header[:len(magic)]) != magic {
+	version := string(header[:len(magic)])
+	if version != magic && version != legacyMagic {
 		return ErrInvalidFormat
 	}
 	salt := header[len(magic):]
@@ -147,20 +158,38 @@ func DecryptStream(w io.Writer, r io.Reader, password string) error {
 		var lenBuf [4]byte
 		_, err := io.ReadFull(r, lenBuf[:])
 		if err == io.EOF {
-			return nil
+			if version == legacyMagic {
+				return nil
+			}
+			return ErrDecryptFailed
 		}
 		if err != nil {
 			return ErrDecryptFailed
 		}
 
-		ciphertext := make([]byte, binary.BigEndian.Uint32(lenBuf[:]))
+		length := binary.BigEndian.Uint32(lenBuf[:])
+		if length < uint32(gcm.Overhead()) || length > uint32(chunkSize+gcm.Overhead()) {
+			return ErrDecryptFailed
+		}
+		ciphertext := make([]byte, length)
 		if _, err := io.ReadFull(r, ciphertext); err != nil {
 			return ErrDecryptFailed
 		}
 
-		plaintext, err := gcm.Open(nil, chunkNonce(counter), ciphertext, nil)
+		var aad []byte
+		if version == magic {
+			aad = []byte(magic)
+		}
+		plaintext, err := gcm.Open(nil, chunkNonce(counter), ciphertext, aad)
 		if err != nil {
 			return ErrDecryptFailed
+		}
+		if version == magic && len(plaintext) == 0 {
+			var extra [1]byte
+			if _, err := io.ReadFull(r, extra[:]); err != io.EOF {
+				return ErrDecryptFailed
+			}
+			return nil
 		}
 		if _, err := w.Write(plaintext); err != nil {
 			return err

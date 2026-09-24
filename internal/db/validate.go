@@ -36,9 +36,10 @@ type ValidationIssue struct {
 const insertColumnPrefixBytes = 64 * 1024
 
 var (
-	createTableNameRe  = regexp.MustCompile("(?is)CREATE\\s+TABLE\\s+`([^`]+)`\\s*\\(")
-	generatedColumnRe  = regexp.MustCompile(`(?i)GENERATED\s+ALWAYS\s+AS`)
-	insertColumnListRe = regexp.MustCompile("(?is)INSERT\\s+INTO\\s+`[^`]+`\\s*(?:\\(([^)]*)\\))?\\s*VALUES")
+	quotedIdentifierPattern = "(?:`(?:``|[^`])+`|\"(?:\"\"|[^\"])+\")"
+	createTableNameRe       = regexp.MustCompile("(?is)CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(" + quotedIdentifierPattern + ")\\s*\\(")
+	generatedColumnRe       = regexp.MustCompile(`(?i)GENERATED\s+ALWAYS\s+AS`)
+	insertColumnListRe      = regexp.MustCompile("(?is)INSERT\\s+INTO\\s+" + quotedIdentifierPattern + "\\s*(?:\\((.*?)\\))?\\s*VALUES")
 )
 
 // ValidateDump checks every table in dir for columns that its schema
@@ -146,7 +147,7 @@ func parseSchemaColumns(schemaSQL string) (table string, columns []string, gener
 	if loc == nil {
 		return "", nil, nil, false
 	}
-	table = schemaSQL[loc[2]:loc[3]]
+	table = unquoteIdentifier(schemaSQL[loc[2]:loc[3]])
 
 	openParen := loc[1] - 1 // index of the '(' the regex matched
 	closeParen := findMatchingParen(schemaSQL, openParen)
@@ -158,14 +159,14 @@ func parseSchemaColumns(schemaSQL string) (table string, columns []string, gener
 	generated = make(map[string]bool)
 	for _, def := range splitTopLevelCommas(body) {
 		def = strings.TrimSpace(def)
-		if def == "" || def[0] != '`' {
+		if def == "" || (def[0] != '`' && def[0] != '"') {
 			continue // not a column definition (PRIMARY KEY / CONSTRAINT / etc.)
 		}
-		end := scanQuotedSQL(def, 0, '`', '`')
+		end := scanQuotedSQL(def, 0, def[0], def[0])
 		if end > len(def) {
 			continue
 		}
-		name := def[1 : end-1]
+		name := unquoteIdentifier(def[:end])
 		columns = append(columns, name)
 		if generatedColumnRe.MatchString(def[end:]) {
 			generated[name] = true
@@ -189,8 +190,8 @@ func parseInsertColumns(sql string) (columns []string, hasExplicitList bool) {
 	if colList == "" {
 		return nil, false
 	}
-	for _, part := range strings.Split(colList, ",") {
-		part = strings.Trim(strings.TrimSpace(part), "`")
+	for _, part := range splitTopLevelCommas(colList) {
+		part = unquoteIdentifier(strings.TrimSpace(part))
 		if part != "" {
 			columns = append(columns, part)
 		}
@@ -326,4 +327,15 @@ func readPrefixCompressed(path string, maxBytes int64) ([]byte, error) {
 	}
 	defer r.Close()
 	return io.ReadAll(io.LimitReader(r, maxBytes))
+}
+
+func unquoteIdentifier(name string) string {
+	if len(name) < 2 {
+		return name
+	}
+	quote := name[:1]
+	if (quote == "`" || quote == "\"") && name[len(name)-1:] == quote {
+		return strings.ReplaceAll(name[1:len(name)-1], quote+quote, quote)
+	}
+	return name
 }

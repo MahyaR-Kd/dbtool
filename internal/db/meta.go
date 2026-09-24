@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"dbtool/internal/backupstate"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -117,6 +118,9 @@ func FindLatestDumpDir(workDir, prefix string) string {
 			continue
 		}
 
+		if !backupstate.IsComplete(filepath.Join(workDir, name)) {
+			continue
+		}
 		if latestDir == "" || t.After(latestTime) {
 			latestDir = filepath.Join(workDir, name)
 			latestTime = t

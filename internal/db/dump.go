@@ -10,10 +10,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"dbtool/internal/backupstate"
 	"dbtool/internal/connection"
+	"dbtool/internal/filelock"
 	"dbtool/internal/logger"
+	"dbtool/internal/paths"
 	"dbtool/internal/progress"
 	"dbtool/internal/rotate"
 	"dbtool/internal/s3store"
@@ -192,17 +196,32 @@ func redactPasswordArg(args []string) []string {
 }
 
 // mydumperMetadataComplete reports whether outDir contains a finished
-// mydumper metadata file.
-//
-// mydumper writes to "metadata.partial" throughout the dump and renames it
-// to "metadata" as one of the very last things it does, unconditionally on
-// actually finishing — independent of the internal error counter that
-// drives its exit code (see the call site in RunDump). Its presence is
-// therefore a reliable signal that the dump completed even when mydumper's
-// own exit status says otherwise.
+// mydumper metadata file. mydumper renames metadata.partial to metadata only
+// on genuine completion, independent of the internal error counter that
+// drives its exit code (mydumper/mydumper#1300), so its presence is a
+// reliable completion signal even when the exit status says otherwise.
 func mydumperMetadataComplete(outDir string) bool {
 	info, err := os.Stat(filepath.Join(outDir, "metadata"))
 	return err == nil && !info.IsDir()
+}
+
+// classifyMydumperLine reports whether a stderr line is a GLib WARNING, and
+// whether it signals a real failure: CRITICAL/ERROR, or the WARNING mydumper
+// emits when a table's data query fails ("Failed to execute query" — the
+// table's rows are then silently missing).
+func classifyMydumperLine(line string) (warn, severe bool) {
+	severe = strings.Contains(line, "CRITICAL **") || strings.Contains(line, "ERROR **") || strings.Contains(line, "Failed to execute query")
+	warn = strings.Contains(line, "WARNING **")
+	return warn, severe
+}
+
+// mydumperExitIsBenign reports whether a non-zero mydumper exit can be
+// treated as success: the metadata file confirms completion, at least one
+// WARNING explains the bumped error counter (mydumper/mydumper#1300), and
+// nothing severe was logged. A non-zero exit with no explanation at all —
+// or with a metadata file but a real error — stays a failure.
+func mydumperExitIsBenign(outDir string, sawWarning, sawSevere bool) bool {
+	return mydumperMetadataComplete(outDir) && sawWarning && !sawSevere
 }
 
 func RunDump(cfg types.Config, pass string) string {
@@ -225,6 +244,30 @@ func RunDump(cfg types.Config, pass string) string {
 		cfg.Name,
 		time.Now().Format("2006-01-02_150405"),
 	))
+
+	lockDir, err := paths.DbtoolDir()
+	if err != nil {
+		fmt.Println("Dump lock failed:", err)
+		os.Exit(1)
+	}
+	release, err := filelock.Acquire(lockDir, "dump:"+s.WorkDir+":"+cfg.Name, false)
+	if err != nil {
+		fmt.Println("Dump blocked:", err)
+		os.Exit(1)
+	}
+	defer release()
+	// mydumper requires an empty output directory. Stage outside the published
+	// naming convention, then atomically rename only after successful completion.
+	finalDir := outDir
+	if _, err := os.Lstat(finalDir); !os.IsNotExist(err) {
+		fmt.Println("Dump directory already exists or cannot be checked:", finalDir)
+		os.Exit(1)
+	}
+	outDir, err = os.MkdirTemp(s.WorkDir, ".dbtool-pending-")
+	if err != nil {
+		fmt.Println("Cannot create staging directory:", err)
+		os.Exit(1)
+	}
 
 	logger.Debug("dump output directory: %s", outDir)
 
@@ -328,12 +371,23 @@ func RunDump(cfg types.Config, pass string) string {
 	// dumping schema for …" line corresponds to one table being processed.  We
 	// count them to drive the real bar; if the pre-count DB query failed we use
 	// the first [X/Y] line (legacy format) to upgrade the spinner instead.
+	stderrDone := make(chan struct{})
+	var sawWarning, sawSevere atomic.Bool
 	go func() {
+		defer close(stderrDone)
 		var stderrCount int
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
 			logger.Debug("[mydumper stderr] %s", line)
+
+			warn, severe := classifyMydumperLine(line)
+			if warn {
+				sawWarning.Store(true)
+			}
+			if severe {
+				sawSevere.Store(true)
+			}
 
 			if progress.ParseDumpingTable(line) {
 				barMu.Lock()
@@ -367,13 +421,17 @@ func RunDump(cfg types.Config, pass string) string {
 		}
 	}()
 
+	stdoutDone := make(chan struct{})
 	go func() {
+		defer close(stdoutDone)
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			logger.Debug("[mydumper stdout] %s", scanner.Text())
 		}
 	}()
 
+	<-stdoutDone
+	<-stderrDone
 	err = cmd.Wait()
 	close(done)
 
@@ -387,7 +445,7 @@ func RunDump(cfg types.Config, pass string) string {
 	fmt.Println()
 
 	if err != nil {
-		if mydumperMetadataComplete(outDir) {
+		if mydumperExitIsBenign(outDir, sawWarning.Load(), sawSevere.Load()) {
 			logger.Warn("mydumper exited with a non-zero status for config %q, but its metadata file confirms the dump completed — likely a non-fatal MySQL warning (e.g. insufficient privilege to read binlog position) incorrectly driving the exit code; see https://github.com/mydumper/mydumper/issues/1300: %v", cfg.Name, err)
 			fmt.Println("Warning: mydumper reported a non-zero exit status, but the dump completed successfully (a known mydumper quirk — see dbtool.log for details).")
 		} else {
@@ -397,12 +455,19 @@ func RunDump(cfg types.Config, pass string) string {
 		}
 	}
 
+	if !mydumperMetadataComplete(outDir) {
+		fmt.Println("Dump FAILED: mydumper did not produce completed metadata")
+		os.Exit(1)
+	}
 	logger.Info("dump completed for config %q: %s", cfg.Name, outDir)
 
+	if err := backupstate.Begin(outDir); err != nil {
+		fmt.Println("Cannot mark pending dump:", err)
+		os.Exit(1)
+	}
 	// Patch known dump-portability issues before this dump is retained or
 	// uploaded — see PatchDumpDir for what it does and doesn't touch.
 	PatchDumpDir(outDir)
-	fmt.Println("Dump completed:", outDir)
 
 	// Safety net: mydumper (especially older versions) can silently drop a
 	// column from a table's INSERT statements — e.g. a known issue where
@@ -412,19 +477,21 @@ func RunDump(cfg types.Config, pass string) string {
 	// and restoring silently substitutes the column's DEFAULT instead. Warn
 	// loudly if this dump shows that pattern, without failing the dump.
 	ReportValidationIssues(ValidateDump(outDir))
-
-	// Rotate old dump directories based on the configured retention period.
-	if s.StorageType == settings.StorageS3 {
-		// In S3 mode rotate old S3 dumps; local dumps are handled below.
-		rotate.RotateOldS3Dumps(s.S3, cfg.Name, cfg.RetentionDays)
-	} else {
-		rotate.RotateOldDumps(s.WorkDir, cfg.Name, cfg.RetentionDays)
+	if err := backupstate.Finish(outDir); err != nil {
+		fmt.Println("Cannot publish dump:", err)
+		os.Exit(1)
 	}
+	if err := os.Rename(outDir, finalDir); err != nil {
+		fmt.Println("Cannot publish dump directory:", err)
+		os.Exit(1)
+	}
+	outDir = finalDir
+	fmt.Println("Dump completed:", outDir)
 
 	// ---------------- S3 upload ----------------
 	// The local copy is kept until after Telegram delivery below (which reads
 	// outDir from disk) and is only removed once both are done.
-	if s.StorageType == settings.StorageS3 {
+	if s.S3Enabled() {
 		fmt.Println("Uploading dump to S3…")
 		logger.Info("uploading dump to S3 bucket %q prefix %q", s.S3.Bucket, s.S3.Prefix)
 		if err := s3store.UploadDir(s.S3, outDir); err != nil {
@@ -441,12 +508,20 @@ func RunDump(cfg types.Config, pass string) string {
 		fmt.Printf("S3 upload completed: s3://%s/%s/\n", s.S3.Bucket, s3Path)
 	}
 
+	// Rotate old dump directories based on the configured retention period.
+	if s.S3Enabled() {
+		// In S3 mode rotate old S3 dumps; local dumps are handled below.
+		rotate.RotateOldS3Dumps(s.S3, cfg.Name, cfg.RetentionDays)
+	} else {
+		rotate.RotateOldDumps(s.WorkDir, cfg.Name, cfg.RetentionDays)
+	}
+
 	// ---------------- Telegram delivery ----------------
 	// Runs after the dump has been persisted (S3 upload above, or already on
 	// local disk), regardless of which storage backend is configured.
 	// Delivery failures are logged and reported but never fail the dump — the
 	// local/S3 copy is already safe by this point.
-	if s.Telegram.Enabled() {
+	if s.Telegram.Enabled() && !cfg.TelegramDisabled {
 		fmt.Println("Sending dump to Telegram…")
 		if err := telegram.SendDump(s.Telegram, outDir); err != nil {
 			logger.Error("telegram delivery failed for %q: %v", outDir, err)
@@ -458,7 +533,7 @@ func RunDump(cfg types.Config, pass string) string {
 	}
 
 	// ---------------- cleanup local copy (S3 mode only) ----------------
-	if s.StorageType == settings.StorageS3 {
+	if s.S3Enabled() {
 		logger.Debug("removing local dump dir after S3 upload: %s", outDir)
 		if err := os.RemoveAll(outDir); err != nil {
 			logger.Error("failed to remove local dump dir %s after S3 upload: %v", outDir, err)

@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"dbtool/internal/connection"
+	"dbtool/internal/filelock"
 	"dbtool/internal/logger"
+	"dbtool/internal/paths"
 	"dbtool/internal/progress"
 	"dbtool/internal/settings"
 	"dbtool/internal/types"
@@ -24,17 +26,21 @@ import (
 // myloaderRestoreCompletedMarker is the message myloader logs unconditionally
 // as the very last thing it does in main() — after schema, data, checksums,
 // and cleanup have all finished — right before computing its exit code from
-// its internal error counter (see myloader.c: `exit_code = errors ? ... `).
-// That counter is incremented by any warning-level MySQL response (e.g. a
-// transient reconnect, an ignorable duplicate-key warning), the same
-// non-fatal-warnings-drive-exit-code bug as mydumper's own
-// (mydumper/mydumper#1300), just on the restore side. Seeing this marker in
-// myloader's stderr is therefore as reliable a completion signal as
-// mydumperMetadataComplete's metadata file is for dumps.
+// its internal error counter (myloader.c: `exit_code = errors ? ... `). That
+// counter is bumped by any warning-level MySQL response, the same
+// non-fatal-warnings-drive-exit-code bug as mydumper/mydumper#1300, so this
+// marker is a reliable completion signal even when the exit status says
+// otherwise.
 const myloaderRestoreCompletedMarker = "Restore completed"
 
-// isMyloaderRestoreCompletedLine reports whether a single line of myloader's
-// stderr output is (or contains) its unconditional completion message.
+// myloaderErrorsFoundMarker starts the summary myloader prints (print_errors
+// in myloader.c) just before "Restore completed" whenever any schema, data,
+// index, or other real error was counted. If it appears, the completion
+// marker does not mean the restore was clean, so the exit status stands.
+const myloaderErrorsFoundMarker = "Errors found:"
+
+// isMyloaderRestoreCompletedLine reports whether a line of myloader's stderr
+// is (or contains) its unconditional completion message.
 func isMyloaderRestoreCompletedLine(line string) bool {
 	return strings.Contains(line, myloaderRestoreCompletedMarker)
 }
@@ -181,6 +187,17 @@ func listDumpDatabases(dir string) []string {
 }
 
 func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
+	lockDir, err := paths.DbtoolDir()
+	if err != nil {
+		fmt.Println("Restore lock failed:", err)
+		os.Exit(1)
+	}
+	release, err := filelock.Acquire(lockDir, "restore:"+cfg.Host+":"+cfg.Port, false)
+	if err != nil {
+		fmt.Println("Restore blocked:", err)
+		os.Exit(1)
+	}
+	defer release()
 
 	logger.Info("starting restore into config %q (dir=%s overwrite-tables=%v)", cfg.Name, dir, overwriteTables)
 
@@ -239,7 +256,12 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 	if overwriteTables {
 		overwriteArgs := overwriteTablesArgs(myloaderVersion)
 		args = append(args, overwriteArgs...)
+		// Concurrent DROP/CREATE operations on foreign-key-related tables can
+		// deadlock on MySQL metadata locks, even with foreign_key_checks=0.
+		// Serialize schema workers while retaining parallel data loading.
+		args = append(args, "--max-threads-for-schema-creation=1")
 		logger.Debug("myloader: overwrite-tables requested -> %s", strings.Join(overwriteArgs, " "))
+		logger.Debug("myloader: serializing schema changes to avoid overwrite metadata-lock deadlocks")
 	}
 
 	logger.Debug("myloader base command: %s %s", myloaderPath, strings.Join(redactPasswordArg(args), " "))
@@ -282,8 +304,7 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 // restoreOneDatabase runs myloader against dbArgs — already scoped to one
 // source database via "-s", or the whole dump if dbName is "" — retrying
 // with exponential backoff (see restoreBackoff) when it fails specifically
-// because the destination was read-only. Returns nil on success (including
-// the false-failure case handled inside runMyloaderOnce), or the final
+// because the destination was read-only. Returns nil on success, or the final
 // error once retries are exhausted or a non-read-only failure occurs.
 func restoreOneDatabase(cfg types.Config, pass, myloaderPath string, dbArgs []string, dir, dbName string) error {
 	maxAttempts := len(restoreBackoff) + 1
@@ -300,7 +321,7 @@ func restoreOneDatabase(cfg types.Config, pass, myloaderPath string, dbArgs []st
 			return nil
 		}
 
-		if !readOnlyFailure || attempt == maxAttempts {
+		if !readOnlyFailure || !restoreCanRestart(dbArgs) || attempt == maxAttempts {
 			return lastErr
 		}
 
@@ -319,8 +340,8 @@ func restoreOneDatabase(cfg types.Config, pass, myloaderPath string, dbArgs []st
 // dbName's tables if dbName is non-empty, matching the -s in args — dbName
 // is only needed here to size the progress bar), driving the progress bar
 // and log capture. A nil error means success — including the false-failure
-// case where myloader exited non-zero but its own "Restore completed"
-// marker confirms it actually finished (see isMyloaderRestoreCompletedLine).
+// case where myloader exited non-zero but its own "Restore completed" marker
+// confirms it actually finished (see isMyloaderRestoreCompletedLine).
 // A non-nil error's readOnly return is true when myloader aborted
 // specifically because the destination rejected a write with
 // "--read-only option" — see isMyloaderReadOnlyErrorLine — which
@@ -376,14 +397,16 @@ func runMyloaderOnce(cfg types.Config, myloaderPath string, args []string, dir, 
 		}
 	}()
 
+	stdoutDone := make(chan struct{})
 	go func() {
+		defer close(stdoutDone)
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			logger.Debug("[myloader stdout] %s", scanner.Text())
 		}
 	}()
 
-	var restoreCompleted atomic.Bool
+	var restoreCompleted, errorsReported atomic.Bool
 	var readOnlyDetected atomic.Bool
 	stderrDone := make(chan struct{})
 
@@ -400,6 +423,9 @@ func runMyloaderOnce(cfg types.Config, myloaderPath string, args []string, dir, 
 
 			if isMyloaderRestoreCompletedLine(line) {
 				restoreCompleted.Store(true)
+			}
+			if strings.Contains(line, myloaderErrorsFoundMarker) {
+				errorsReported.Store(true)
 			}
 			if isMyloaderReadOnlyErrorLine(line) {
 				readOnlyDetected.Store(true)
@@ -435,8 +461,9 @@ func runMyloaderOnce(cfg types.Config, myloaderPath string, args []string, dir, 
 		}
 	}()
 
+	<-stdoutDone
+	<-stderrDone
 	waitErr := cmd.Wait()
-	<-stderrDone // ensure the final stderr line (if any) has been scanned
 	close(done)
 
 	barMu.Lock()
@@ -452,11 +479,21 @@ func runMyloaderOnce(cfg types.Config, myloaderPath string, args []string, dir, 
 		return nil, false
 	}
 
-	if restoreCompleted.Load() {
+	if restoreCompleted.Load() && !errorsReported.Load() {
 		logger.Warn("myloader exited with a non-zero status for config %q, but it logged %q — likely a non-fatal MySQL warning incorrectly driving the exit code, the same class of bug as mydumper/mydumper#1300 on the restore side: %v", cfg.Name, myloaderRestoreCompletedMarker, waitErr)
 		fmt.Println("Warning: myloader reported a non-zero exit status, but the restore completed successfully (a known myloader quirk — see dbtool.log for details).")
 		return nil, false
 	}
 
 	return waitErr, readOnlyDetected.Load()
+}
+
+// Restarting a partially committed database is safe only when tables are dropped.
+func restoreCanRestart(args []string) bool {
+	for _, arg := range args {
+		if arg == "--overwrite-tables" || arg == "--drop-table" || arg == "--drop-table=DROP" {
+			return true
+		}
+	}
+	return false
 }

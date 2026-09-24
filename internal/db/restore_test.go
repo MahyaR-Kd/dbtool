@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestIsMyloaderRestoreCompletedLine guards a real false-failure: myloader
+// // TestIsMyloaderRestoreCompletedLine guards a real false-failure: myloader
 // (like mydumper) increments an internal error counter for any non-fatal
 // MySQL warning, and exits non-zero purely based on that counter
 // (src/myloader/myloader.c: `exit_code = errors ? EXIT_FAILURE :
@@ -243,5 +243,42 @@ func assertMarkerExists(t *testing.T, dir string, want bool) {
 	got := err == nil
 	if got != want {
 		t.Errorf("marker exists = %v, want %v (stat err: %v)", got, want, err)
+	}
+}
+
+func TestMydumperExitIsBenign(t *testing.T) {
+	dir := t.TempDir()
+	touchFiles(t, dir, "metadata")
+	empty := t.TempDir()
+
+	if !mydumperExitIsBenign(dir, true, false) {
+		t.Error("metadata + warning + nothing severe should be benign")
+	}
+	if mydumperExitIsBenign(dir, false, false) {
+		t.Error("non-zero exit with no explaining warning must stay a failure")
+	}
+	if mydumperExitIsBenign(dir, true, true) {
+		t.Error("severe error must stay a failure")
+	}
+	if mydumperExitIsBenign(empty, true, false) {
+		t.Error("no metadata must stay a failure")
+	}
+}
+
+func TestClassifyMydumperLine(t *testing.T) {
+	cases := []struct {
+		line         string
+		warn, severe bool
+	}{
+		{"** (mydumper:1): WARNING **: 10:00:00.000: Couldn't get master position", true, false},
+		{"** (mydumper:1): CRITICAL **: 10:00:00.000: boom", false, true},
+		{"** (mydumper:1): WARNING **: Failed to execute query - ERROR 1064", true, true},
+		{"** Message: 10:00:00.000: Thread 1 dumping data", false, false},
+	}
+	for _, c := range cases {
+		w, s := classifyMydumperLine(c.line)
+		if w != c.warn || s != c.severe {
+			t.Errorf("classifyMydumperLine(%q) = %v,%v want %v,%v", c.line, w, s, c.warn, c.severe)
+		}
 	}
 }

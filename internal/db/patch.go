@@ -201,30 +201,75 @@ func patchSQLModeFile(path string) error {
 	return os.Rename(tmp, path)
 }
 
-// stripRemovedSQLModeValues removes any removedSQLModeValues entry
-// (whichever of "V,", ",V", or a bare "V" — covering that value's
-// position in the comma-separated sql_mode list) from head, reporting
-// whether a change was made.
+// stripRemovedSQLModeValues patches only SET statements in the leading SQL
+// preamble. It stops at the first schema/data statement and skips ordinary
+// comments, including multiline comments containing SQL-looking text.
 func stripRemovedSQLModeValues(head []byte) ([]byte, bool) {
 	text := string(head)
-	changed := false
-	for _, v := range removedSQLModeValues {
+	re := regexp.MustCompile(`(?i)(^\s*(?:/\*!\d+\s+)?SET\s+SQL_MODE\s*=\s*['"])([^'"]*)(['"])`)
+	patch := func(statement string) string {
+		return re.ReplaceAllStringFunc(statement, func(match string) string {
+			m := re.FindStringSubmatch(match)
+			var kept []string
+			for _, mode := range strings.Split(m[2], ",") {
+				removed := false
+				for _, v := range removedSQLModeValues {
+					if strings.EqualFold(strings.TrimSpace(mode), v) {
+						removed = true
+						break
+					}
+				}
+				if !removed {
+					kept = append(kept, mode)
+				}
+			}
+			return m[1] + strings.Join(kept, ",") + m[3]
+		})
+	}
+	var out strings.Builder
+	for i := 0; i < len(text); {
+		start := i
+		for i < len(text) && strings.ContainsRune(" \t\r\n;", rune(text[i])) {
+			i++
+		}
+		out.WriteString(text[start:i])
+		if i == len(text) {
+			break
+		}
 		switch {
-		case strings.Contains(text, v+","):
-			text = strings.Replace(text, v+",", "", 1)
-			changed = true
-		case strings.Contains(text, ","+v):
-			text = strings.Replace(text, ","+v, "", 1)
-			changed = true
-		case strings.Contains(text, v):
-			text = strings.Replace(text, v, "", 1)
-			changed = true
+		case text[i] == '#' || strings.HasPrefix(text[i:], "-- ") || strings.HasPrefix(text[i:], "--\t"):
+			end := scanLineComment(text, i)
+			out.WriteString(text[i:end])
+			i = end
+		case strings.HasPrefix(text[i:], "/*"):
+			end := scanBlockComment(text, i)
+			statement := text[i:end]
+			if strings.HasPrefix(statement, "/*!") {
+				statement = patch(statement)
+			}
+			out.WriteString(statement)
+			i = end
+		case len(text)-i >= 3 && strings.EqualFold(text[i:i+3], "SET") && len(text)-i > 3 && strings.ContainsRune(" \t\r\n", rune(text[i+3])):
+			end := i
+			for end < len(text) && text[end] != ';' {
+				if text[end] == '\'' || text[end] == '"' || text[end] == '`' {
+					end = scanQuotedSQL(text, end, text[end], text[end])
+				} else {
+					end++
+				}
+			}
+			if end < len(text) {
+				end++
+			}
+			out.WriteString(patch(text[i:end]))
+			i = end
+		default:
+			out.WriteString(text[i:])
+			i = len(text)
 		}
 	}
-	if !changed {
-		return head, false
-	}
-	return []byte(text), true
+	result := out.String()
+	return []byte(result), result != text
 }
 
 // dumpMetadataHasQuoteCharacter reports whether dir's own metadata file

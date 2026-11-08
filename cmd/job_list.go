@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"time"
+
 	"dbtool/internal/job"
-	"fmt"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -13,25 +15,14 @@ var jobListCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		jobs := job.Load()
 		if len(jobs) == 0 {
-			fmt.Println("No jobs found")
+			ui.Empty("No jobs yet", "Create one with "+ui.Code("dbtool job add"))
 			return
 		}
-		for i, j := range jobs {
-			switch j.Type {
-			case "dump":
-				fmt.Printf("%d) %s [dump] src=%s schedule=%q\n",
-					i+1, j.Name, j.SrcConfigName, j.Schedule)
-			case "restore":
-				fmt.Printf("%d) %s [restore] src=%s dst=%s schedule=%q\n",
-					i+1, j.Name, j.SrcConfigName, j.DstConfigName, j.Schedule)
-			case "sync":
-				fmt.Printf("%d) %s [sync] src=%s dst=%s schedule=%q\n",
-					i+1, j.Name, j.SrcConfigName, j.DstConfigName, j.Schedule)
-			default:
-				fmt.Printf("%d) %s [%s] schedule=%q\n",
-					i+1, j.Name, j.Type, j.Schedule)
-			}
-		}
+
+		ui.PrintTable(jobHeaders, jobRows(jobs, time.Now()))
+		ui.Blank()
+		ui.Hint("%s · manage them with %s", ui.Plural(len(jobs), "job", "jobs"),
+			ui.Code("dbtool job add | edit | delete"))
 	},
 }
 

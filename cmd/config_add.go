@@ -1,11 +1,14 @@
 package cmd
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 
 	"dbtool/internal/config"
+	"dbtool/internal/interactivelist"
 	"dbtool/internal/types"
+	"dbtool/internal/ui"
+
 	"github.com/spf13/cobra"
 )
 
@@ -46,15 +49,15 @@ var configAddCmd = &cobra.Command{
 		var c types.Config
 		if hasNonInteractiveInput {
 			if configAddName == "" || configAddHost == "" || configAddPort == "" || configAddUser == "" {
-				fmt.Println("For non-interactive mode, --name, --host, --port, and --user are required.")
+				ui.Error("For non-interactive mode, --name, --host, --port, and --user are required.")
 				return
 			}
 			if configAddSSH && (configAddSSHHost == "" || configAddSSHUser == "" || configAddSSHPort == "") {
-				fmt.Println("When --ssh is set, --ssh-host, --ssh-user, and --ssh-port are required.")
+				ui.Error("When --ssh is set, --ssh-host, --ssh-user, and --ssh-port are required.")
 				return
 			}
 			if !configAddSSH && (configAddSSHHost != "" || configAddSSHUser != "" || configAddSSHPort != "") {
-				fmt.Println("--ssh-host, --ssh-user, and --ssh-port can only be used with --ssh.")
+				ui.Error("--ssh-host, --ssh-user, and --ssh-port can only be used with --ssh.")
 				return
 			}
 
@@ -78,14 +81,77 @@ var configAddCmd = &cobra.Command{
 			}
 		} else {
 			c = config.AskInteractive()
+			if !confirmSaveConfig(c) {
+				return
+			}
 		}
 
 		if err := config.Save(c); err != nil {
-			fmt.Println("Failed to save configs:", err)
+			ui.Error("Failed to save configs: %v", err)
 			return
 		}
-		fmt.Println("Saved")
+		configSaved(c.Name)
 	},
+}
+
+// confirmSaveConfig shows a review box for c and asks whether to save it.
+// Used only by the interactive add/edit/duplicate forms, never by the
+// flag-driven paths. On "no" it prints "Not saved" and returns false.
+func confirmSaveConfig(c types.Config) bool {
+	ui.Blank()
+	ui.PrintBox("Review", ui.BadgeAccent, configReview(c))
+	if !interactivelist.Confirm("Save this config?", true) {
+		ui.Warn("Not saved")
+		return false
+	}
+	return true
+}
+
+// configReview renders c as key/value rows for the review box. The
+// password is never shown — only whether one is saved.
+func configReview(c types.Config) string {
+	password := ui.Muted("not saved")
+	if c.Password != "" {
+		password = "saved"
+	}
+	telegram := ""
+	if c.TelegramDisabled {
+		telegram = "off for this config"
+	}
+	noLocks := ""
+	if c.NoLocks {
+		noLocks = "yes (--no-locks)"
+	}
+	ignores := ignoreDetail(c)
+	return ui.KeyValues(
+		ui.KV{Key: "Name", Value: ui.Bold(c.Name)},
+		ui.KV{Key: "Server", Value: c.User + "@" + c.Host + ":" + c.Port},
+		ui.KV{Key: "Route", Value: configRoute(c)},
+		ui.KV{Key: "Retention", Value: configRetention(c.RetentionDays)},
+		ui.KV{Key: "Skip locks", Value: noLocks},
+		ui.KV{Key: "Telegram", Value: telegram},
+		ui.KV{Key: "Password", Value: password},
+		ui.KV{Key: "Ignores", Value: ignores},
+	)
+}
+
+// configSaved prints the success line for a saved config, plus the obvious
+// next step.
+func configSaved(name string) {
+	ui.Success("Config %s saved", ui.Bold(name))
+	ui.Hint("Back it up now with %s", ui.Code("dbtool dump --name "+shellQuote(name)))
+}
+
+// shellQuote quotes s for display in a suggested command line when it
+// contains anything a shell would split or expand.
+func shellQuote(s string) string {
+	if s != "" && strings.IndexFunc(s, func(r rune) bool {
+		return !(r == '-' || r == '_' || r == '.' || r == '/' || r == ':' || r == '@' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+	}) < 0 {
+		return s
+	}
+	return strconv.Quote(s)
 }
 
 func parseCommaSeparated(input string) []string {

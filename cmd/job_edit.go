@@ -1,10 +1,9 @@
 package cmd
 
 import (
-	"fmt"
-
 	"dbtool/internal/interactivelist"
 	"dbtool/internal/job"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -26,7 +25,7 @@ var jobEditCmd = &cobra.Command{
 		jobs := job.Load()
 
 		if len(jobs) == 0 {
-			fmt.Println("No jobs found")
+			ui.Empty("No jobs yet", "Create one with "+ui.Code("dbtool job add"))
 			return
 		}
 
@@ -39,7 +38,7 @@ var jobEditCmd = &cobra.Command{
 				}
 			}
 			if found == -1 {
-				fmt.Println("Job not found:", jobEditName)
+				ui.Error("Job not found: %s", jobEditName)
 				return
 			}
 
@@ -70,58 +69,61 @@ var jobEditCmd = &cobra.Command{
 			}
 
 			if updated.Name == "" || updated.Type == "" || updated.Schedule == "" {
-				fmt.Println("Job name, type, and schedule cannot be empty.")
+				ui.Error("Job name, type, and schedule cannot be empty.")
 				return
 			}
 			switch updated.Type {
 			case "dump":
 				if updated.SrcConfigName == "" || updated.SrcPassword == "" {
-					fmt.Println("Dump jobs require source config and source password.")
+					ui.Error("Dump jobs require source config and source password.")
 					return
 				}
 			case "restore":
 				if updated.DstConfigName == "" || updated.DstPassword == "" || updated.SrcConfigName == "" {
-					fmt.Println("Restore jobs require destination config/password and source config.")
+					ui.Error("Restore jobs require destination config/password and source config.")
 					return
 				}
 			case "sync":
 				if updated.SrcConfigName == "" || updated.SrcPassword == "" || updated.DstConfigName == "" || updated.DstPassword == "" {
-					fmt.Println("Sync jobs require source+destination configs/passwords.")
+					ui.Error("Sync jobs require source+destination configs/passwords.")
 					return
 				}
 			default:
-				fmt.Println("Unknown type. Use dump, restore, or sync.")
+				ui.Error("Unknown type. Use dump, restore, or sync.")
 				return
 			}
 
 			jobs[found] = updated
 			if err := job.Overwrite(jobs); err != nil {
-				fmt.Println("Failed to save jobs:", err)
+				ui.Error("Failed to save jobs: %v", err)
 				return
 			}
-			fmt.Println("Updated successfully")
+			ui.Success("Job %s updated", ui.Bold(updated.Name))
 			return
 		}
 
 		options := make([]string, len(jobs))
 		for i, j := range jobs {
-			options[i] = fmt.Sprintf("%s [%s] schedule=%q", j.Name, j.Type, j.Schedule)
+			options[i] = jobOption(j)
 		}
 
-		idx, err := interactivelist.SelectOne("Select job to edit", options)
+		idx, err := interactivelist.SelectOne("Choose a job to edit", options)
 		if err != nil {
-			fmt.Println("Invalid selection")
+			ui.Error("Invalid selection")
 			return
 		}
 
 		updated := job.EditInteractive(jobs[idx])
+		if !confirmSaveJob(updated) {
+			return
+		}
 		jobs[idx] = updated
 		if err := job.Overwrite(jobs); err != nil {
-			fmt.Println("Failed to save jobs:", err)
+			ui.Error("Failed to save jobs: %v", err)
 			return
 		}
 
-		fmt.Println("Updated successfully")
+		jobSaved(updated)
 	},
 }
 

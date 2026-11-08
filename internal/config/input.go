@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,41 +15,45 @@ import (
 	"dbtool/internal/secureinput"
 	"dbtool/internal/settings"
 	"dbtool/internal/types"
+	"dbtool/internal/ui"
 )
 
 func AskInteractive() types.Config {
-	reader := bufio.NewReader(os.Stdin)
+	reader := secureinput.Stdin()
 	var cfg types.Config
 
-	cfg.Name = interactivelist.Text(reader, "Name", "")
-	cfg.Host = interactivelist.Text(reader, "Host", "")
-	cfg.Port = interactivelist.Text(reader, "Port", "")
-	cfg.User = interactivelist.Text(reader, "User", "")
-
-	cfg.RetentionDays = askRetentionDays(reader, 0)
-
+	ui.Section("Connection")
+	cfg.Name = interactivelist.TextValidated(reader, "Name", "", uniqueName(""))
+	cfg.Host = interactivelist.TextValidated(reader, "Host", "", interactivelist.Required)
+	cfg.Port = interactivelist.TextValidated(reader, "Port", "", interactivelist.Port)
+	cfg.User = interactivelist.TextValidated(reader, "User", "", interactivelist.Required)
 	cfg.SSH = interactivelist.Confirm("Use SSH?", false)
 
 	if cfg.SSH {
-		cfg.SSHHost = interactivelist.Text(reader, "SSH Host", "")
-		cfg.SSHUser = interactivelist.Text(reader, "SSH User", "")
-		cfg.SSHPort = interactivelist.Text(reader, "SSH Port", "")
+		ui.Section("SSH tunnel")
+		cfg.SSHHost = interactivelist.TextValidated(reader, "SSH Host", "", interactivelist.Required)
+		cfg.SSHUser = interactivelist.TextValidated(reader, "SSH User", "", interactivelist.Required)
+		cfg.SSHPort = interactivelist.TextValidated(reader, "SSH Port", "", interactivelist.OptionalPort)
 	}
 
+	ui.Section("Options")
+	cfg.RetentionDays = askRetentionDays(reader, 0)
 	cfg.NoLocks = interactivelist.Confirm("Skip global lock (--no-locks)? Needed if user lacks RELOAD privilege", false)
 	if settings.Load().Telegram.Enabled() {
 		cfg.TelegramDisabled = !interactivelist.Confirm("Send this config's dumps to Telegram?", true)
 	}
 
+	ui.Section("Credentials")
 	pass, err := secureinput.ReadPassword(interactivelist.PromptLabel("DB Password (used to fetch schema list)", ""))
 	if err != nil {
-		fmt.Println("Error reading password:", err)
+		ui.Error("Could not read password: %v", err)
 		pass = ""
 	}
 	cfg.Password = maybeSavePassword(pass)
 
 	s := settings.Load()
 
+	ui.Section("Schemas & tables")
 	originalHost, originalPort := cfg.Host, cfg.Port
 	cfg, cleanup := connection.ApplyTunnels(cfg, s)
 	defer cleanup()
@@ -62,30 +67,57 @@ func AskInteractive() types.Config {
 	return cfg
 }
 
+// uniqueName validates a config name: it must be non-empty and must not
+// belong to another saved config. keep is the name the form started with
+// (when editing), which is always allowed.
+func uniqueName(keep string) interactivelist.Validator {
+	taken := make(map[string]bool)
+	for _, c := range Load() {
+		if c.Name != keep {
+			taken[c.Name] = true
+		}
+	}
+	return func(name string) error {
+		if err := interactivelist.Required(name); err != nil {
+			return err
+		}
+		if strings.Contains(name, "|") {
+			return errors.New("the name can't contain \"|\"")
+		}
+		if taken[name] {
+			return fmt.Errorf("a config named %q already exists", name)
+		}
+		return nil
+	}
+}
+
 // EditInteractive prompts the user to update each field of an existing Config.
 // Pressing Enter on any field keeps its current value.
 func EditInteractive(cfg types.Config) types.Config {
-	reader := bufio.NewReader(os.Stdin)
+	reader := secureinput.Stdin()
 
-	cfg.Name = interactivelist.Text(reader, "Name", cfg.Name)
-	cfg.Host = interactivelist.Text(reader, "Host", cfg.Host)
-	cfg.Port = interactivelist.Text(reader, "Port", cfg.Port)
-	cfg.User = interactivelist.Text(reader, "User", cfg.User)
-	cfg.RetentionDays = askRetentionDays(reader, cfg.RetentionDays)
-
+	ui.Section("Connection")
+	cfg.Name = interactivelist.TextValidated(reader, "Name", cfg.Name, uniqueName(cfg.Name))
+	cfg.Host = interactivelist.TextValidated(reader, "Host", cfg.Host, interactivelist.Required)
+	cfg.Port = interactivelist.TextValidated(reader, "Port", cfg.Port, interactivelist.Port)
+	cfg.User = interactivelist.TextValidated(reader, "User", cfg.User, interactivelist.Required)
 	cfg.SSH = interactivelist.Confirm("Use SSH?", cfg.SSH)
 
 	if cfg.SSH {
-		cfg.SSHHost = interactivelist.Text(reader, "SSH Host", cfg.SSHHost)
-		cfg.SSHUser = interactivelist.Text(reader, "SSH User", cfg.SSHUser)
-		cfg.SSHPort = interactivelist.Text(reader, "SSH Port", cfg.SSHPort)
+		ui.Section("SSH tunnel")
+		cfg.SSHHost = interactivelist.TextValidated(reader, "SSH Host", cfg.SSHHost, interactivelist.Required)
+		cfg.SSHUser = interactivelist.TextValidated(reader, "SSH User", cfg.SSHUser, interactivelist.Required)
+		cfg.SSHPort = interactivelist.TextValidated(reader, "SSH Port", cfg.SSHPort, interactivelist.OptionalPort)
 	}
 
+	ui.Section("Options")
+	cfg.RetentionDays = askRetentionDays(reader, cfg.RetentionDays)
 	cfg.NoLocks = interactivelist.Confirm("Skip global lock (--no-locks)?", cfg.NoLocks)
 	if settings.Load().Telegram.Enabled() {
 		cfg.TelegramDisabled = !interactivelist.Confirm("Send this config's dumps to Telegram?", !cfg.TelegramDisabled)
 	}
 
+	ui.Section("Credentials")
 	savedLabel := "no"
 	if cfg.Password != "" {
 		savedLabel = "yes"
@@ -93,16 +125,17 @@ func EditInteractive(cfg types.Config) types.Config {
 	if interactivelist.Confirm(fmt.Sprintf("Update saved DB password? (currently saved: %s)", savedLabel), false) {
 		newPass, err := secureinput.ReadPassword(interactivelist.PromptLabel("New DB password", "Enter to clear the saved password"))
 		if err != nil {
-			fmt.Println("Error reading password:", err)
+			ui.Error("Could not read password: %v", err)
 		} else {
 			cfg.Password = newPass
 		}
 	}
 
+	ui.Section("Schemas & tables")
 	if interactivelist.Confirm("Update ignored schemas/tables?", false) {
 		pass, err := secureinput.ReadPassword(interactivelist.PromptLabel("DB Password (used only to fetch schema list, not stored)", ""))
 		if err != nil {
-			fmt.Println("Error reading password:", err)
+			ui.Error("Could not read password: %v", err)
 			pass = ""
 		}
 		s := settings.Load()
@@ -194,12 +227,12 @@ func askIgnoredSchemasAndTables(host, port, user, pass string, existingSchemas [
 
 	schemas, err := fetchUserSchemas(connectHost, connectPort, user, pass)
 	if err != nil {
-		fmt.Printf("Could not fetch schemas (%v) — skipping schema/table selection.\n", err)
+		ui.Warn("Could not fetch schemas (%v) — skipping schema/table selection.", err)
 		return nil, nil, err
 	}
 
 	if len(schemas) == 0 {
-		fmt.Println("No user schemas found.")
+		ui.Info("No user schemas found.")
 		return nil, nil, nil
 	}
 
@@ -214,7 +247,7 @@ func askIgnoredSchemasAndTables(host, port, user, pass string, existingSchemas [
 		"Include only selected schemas (handy when you only want a few out of many)",
 	})
 	if err != nil {
-		fmt.Println("Selection canceled — keeping existing schema/table settings unchanged.")
+		ui.Info("Selection canceled — keeping existing schema/table settings unchanged.")
 		return existingSchemas, existingTables, nil
 	}
 	includeMode := mode == 1
@@ -228,7 +261,7 @@ func askIgnoredSchemasAndTables(host, port, user, pass string, existingSchemas [
 		preselect := func(i int) bool { return !existingIgnoredSet[schemas[i]] }
 		selectedIdx, err := interactivelist.SelectMulti("Include schemas (Tab to toggle, Enter to confirm)", schemas, preselect)
 		if err != nil {
-			fmt.Println("Selection canceled — keeping existing schema/table settings unchanged.")
+			ui.Info("Selection canceled — keeping existing schema/table settings unchanged.")
 			return existingSchemas, existingTables, nil
 		}
 
@@ -254,7 +287,7 @@ func askIgnoredSchemasAndTables(host, port, user, pass string, existingSchemas [
 		preselect := func(i int) bool { return existingIgnoredSet[schemas[i]] }
 		selectedIdx, err := interactivelist.SelectMulti("Ignore schemas (Tab to toggle, Enter to confirm)", schemas, preselect)
 		if err != nil {
-			fmt.Println("Selection canceled — keeping existing schema/table settings unchanged.")
+			ui.Info("Selection canceled — keeping existing schema/table settings unchanged.")
 			return existingSchemas, existingTables, nil
 		}
 		for _, i := range selectedIdx {
@@ -297,7 +330,7 @@ func askIgnoredTablesForSchemas(dumpableSchemas []string, host, port, user, pass
 		"Include only selected tables (handy when you only want a few out of many)",
 	})
 	if err != nil {
-		fmt.Println("Selection canceled — keeping existing table settings unchanged.")
+		ui.Info("Selection canceled — keeping existing table settings unchanged.")
 		return existingTables, nil
 	}
 	includeMode := mode == 1
@@ -319,9 +352,9 @@ func askIgnoredTablesForSchemas(dumpableSchemas []string, host, port, user, pass
 		tables, err := fetchTablesForSchema(host, port, user, pass, chosenSchema)
 		switch {
 		case err != nil:
-			fmt.Printf("Could not fetch tables for %q (%v) — skipping.\n", chosenSchema, err)
+			ui.Warn("Could not fetch tables for %q (%v) — skipping.", chosenSchema, err)
 		case len(tables) == 0:
-			fmt.Printf("No tables found in schema %q.\n", chosenSchema)
+			ui.Info("No tables found in schema %q.", chosenSchema)
 		default:
 			existingIgnoredSet := make(map[string]bool, len(existingTables[chosenSchema]))
 			for _, t := range existingTables[chosenSchema] {
@@ -341,12 +374,12 @@ func askIgnoredTablesForSchemas(dumpableSchemas []string, host, port, user, pass
 			}
 
 			if pickErr != nil {
-				fmt.Println("Selection canceled for this schema — leaving it unchanged.")
+				ui.Info("Selection canceled for this schema — leaving it unchanged.")
 			} else {
 				var newIgnored []string
 				if includeMode {
 					if len(selectedIdx) == 0 {
-						fmt.Printf("No tables selected — including all tables in %q (nothing ignored there).\n", chosenSchema)
+						ui.Info("No tables selected — including all tables in %q (nothing ignored there).", chosenSchema)
 					} else {
 						includedSet := make(map[string]bool, len(selectedIdx))
 						for _, i := range selectedIdx {
@@ -453,15 +486,20 @@ func fetchTablesForSchema(host, port, user, pass, schema string) ([]string, erro
 func Select() types.Config {
 	configs := Load()
 
-	options := make([]string, len(configs))
-	for i, c := range configs {
-		options[i] = fmt.Sprintf("%s (%s:%s)", c.Name, c.Host, c.Port)
+	if len(configs) == 0 {
+		ui.Error("No configs yet")
+		ui.Hint("Create one with %s", ui.Code("dbtool config add"))
+		os.Exit(1)
 	}
 
-	idx, err := interactivelist.SelectOne("Select config", options)
+	options := make([]string, len(configs))
+	for i, c := range configs {
+		options[i] = fmt.Sprintf("%s  %s", c.Name, ui.Muted(c.Host+":"+c.Port))
+	}
+
+	idx, err := interactivelist.SelectOne("Choose a config", options)
 	if err != nil {
-		fmt.Println("Invalid selection")
-		os.Exit(1)
+		ui.Fatal("Invalid selection")
 	}
 
 	return configs[idx]
@@ -483,7 +521,8 @@ func SelectByName(name string) types.Config {
 		}
 	}
 
-	fmt.Println("Config not found:", name)
+	ui.Error("Config not found: %s", name)
+	ui.Hint("See saved configs with %s", ui.Code("dbtool config list"))
 	os.Exit(1)
 	return types.Config{}
 }
@@ -509,7 +548,7 @@ func AskPassword(cliPass, envVar string, cfg types.Config) string {
 	if cfg.Password != "" {
 		pt, err := credvault.Decrypt(cfg.Password)
 		if err != nil {
-			fmt.Println("Could not unlock the saved password:", err)
+			ui.Warn("Could not unlock the saved password: %v", err)
 		} else if pt != "" {
 			return pt
 		}
@@ -517,8 +556,7 @@ func AskPassword(cliPass, envVar string, cfg types.Config) string {
 
 	pass, err := secureinput.ReadPassword(interactivelist.PromptLabel("DB Password", ""))
 	if err != nil {
-		fmt.Println("Error reading password:", err)
-		os.Exit(1)
+		ui.Fatal("Could not read password: %v", err)
 	}
 	return pass
 }
@@ -527,18 +565,11 @@ func askRetentionDays(reader *bufio.Reader, current int) int {
 	if current < 0 {
 		current = 0
 	}
-	for {
-		fmt.Print(interactivelist.PromptLabel("Retention days for dumps (0 = keep forever)", strconv.Itoa(current)))
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		if input == "" {
-			return current
-		}
-		days, err := strconv.Atoi(input)
-		if err != nil || days < 0 {
-			fmt.Println("Please enter a non-negative integer.")
-			continue
-		}
-		return days
+	input := interactivelist.TextValidated(reader, "Retention days for dumps (0 = keep forever)",
+		strconv.Itoa(current), interactivelist.NonNegativeInt)
+	days, err := strconv.Atoi(input)
+	if err != nil || days < 0 {
+		return current
 	}
+	return days
 }

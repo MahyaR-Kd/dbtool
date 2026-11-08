@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"dbtool/internal/config"
 	"dbtool/internal/db"
@@ -15,6 +16,8 @@ import (
 	"dbtool/internal/s3store"
 	"dbtool/internal/settings"
 	"dbtool/internal/types"
+	"dbtool/internal/ui"
+
 	"github.com/spf13/cobra"
 )
 
@@ -43,8 +46,7 @@ var restoreCmd = &cobra.Command{
 				// S3 mode: list available dumps from S3 and let the user pick one.
 				selectedDir, err := selectDumpFromS3(s)
 				if err != nil {
-					fmt.Println("Error:", err)
-					os.Exit(1)
+					ui.Fatal("%v", err)
 				}
 				restoreDir = selectedDir
 			} else {
@@ -63,7 +65,7 @@ var restoreCmd = &cobra.Command{
 			logger.Debug("cleaning up S3 temp restore dir: %s", restoreDir)
 			if err := os.RemoveAll(restoreDir); err != nil {
 				logger.Error("failed to remove temp restore dir %s: %v", restoreDir, err)
-				fmt.Printf("Warning: failed to remove temp restore directory %s — please clean it up manually.\n", restoreDir)
+				ui.Warn("Failed to remove temp restore directory %s — please clean it up manually.", restoreDir)
 			}
 		}
 	},
@@ -72,8 +74,13 @@ var restoreCmd = &cobra.Command{
 // selectDumpFromS3 lists dumps stored in S3, lets the user pick one, downloads
 // it to a temp directory, and returns the local path.
 func selectDumpFromS3(s settings.Settings) (string, error) {
-	fmt.Println("Fetching available dumps from S3…")
+	task := ui.StartTask("Fetching available dumps from S3")
 	dumps, err := s3store.ListDumps(s.S3)
+	if err != nil {
+		task.Fail(nil) // the caller reports err
+	} else {
+		task.Done(ui.Plural(len(dumps), "dump", "dumps"))
+	}
 	if err != nil {
 		return "", fmt.Errorf("list S3 dumps: %w", err)
 	}
@@ -84,7 +91,7 @@ func selectDumpFromS3(s settings.Settings) (string, error) {
 	// Sort descending so the newest dump appears first.
 	sort.Sort(sort.Reverse(sort.StringSlice(dumps)))
 
-	idx, err := interactivelist.SelectOne("Select dump (newest first)", dumps)
+	idx, err := interactivelist.SelectOne("Choose a dump (newest first)", dumps)
 	if err != nil {
 		return "", fmt.Errorf("invalid selection: %w", err)
 	}
@@ -95,17 +102,18 @@ func selectDumpFromS3(s settings.Settings) (string, error) {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 
-	fmt.Printf("Downloading %q from S3...\n", chosen)
+	task = ui.StartTask("Downloading %s from S3", ui.Bold(chosen))
 	logger.Info("downloading S3 dump %q to %s", chosen, tmpDir)
 	localDir, err := s3store.DownloadDump(s.S3, chosen, tmpDir)
 	if err != nil {
+		task.Fail(nil) // the caller reports err
 		if rmErr := os.RemoveAll(tmpDir); rmErr != nil {
 			logger.Error("failed to remove temp dir %s after download error: %v", tmpDir, rmErr)
-			fmt.Printf("Warning: failed to remove temp directory %s -- please clean it up manually.\n", tmpDir)
+			ui.Warn("Failed to remove temp directory %s — please clean it up manually.", tmpDir)
 		}
 		return "", fmt.Errorf("download from S3: %w", err)
 	}
-	fmt.Printf("Downloaded to: %s\n", localDir)
+	task.Done(localDir)
 	return localDir, nil
 }
 
@@ -118,27 +126,26 @@ func selectDumpDir() string {
 	// Step 1: pick a source config to browse dumps from.
 	configs := config.Load()
 	if len(configs) == 0 {
-		fmt.Println("No configs found. Add a config first.")
+		ui.Error("No configs yet — add a config first.")
+		ui.Hint("Create one with %s", ui.Code("dbtool config add"))
 		os.Exit(1)
 	}
 
 	configOptions := make([]string, len(configs))
 	for i, c := range configs {
-		configOptions[i] = fmt.Sprintf("%s (%s:%s)", c.Name, c.Host, c.Port)
+		configOptions[i] = configOption(c)
 	}
 
-	cfgIdx, err := interactivelist.SelectOne("Select source config to browse dumps from", configOptions)
+	cfgIdx, err := interactivelist.SelectOne("Choose a source config to browse dumps from", configOptions)
 	if err != nil {
-		fmt.Println("Invalid selection")
-		os.Exit(1)
+		ui.Fatal("Invalid selection")
 	}
 	sourceCfgName := configs[cfgIdx].Name
 
 	// Step 2: list dumps for the chosen source config.
 	entries, err := os.ReadDir(s.WorkDir)
 	if err != nil {
-		fmt.Printf("Cannot read work directory %q: %v\n", s.WorkDir, err)
-		os.Exit(1)
+		ui.Fatal("Cannot read work directory %q: %v", s.WorkDir, err)
 	}
 
 	prefix := sourceCfgName + "_"
@@ -150,20 +157,59 @@ func selectDumpDir() string {
 	}
 
 	if len(dumps) == 0 {
-		fmt.Printf("No dumps found for config %q in %s\n", sourceCfgName, s.WorkDir)
+		ui.Error("No dumps found for config %q in %s", sourceCfgName, s.WorkDir)
+		ui.Hint("Create one with %s", ui.Code("dbtool dump --name "+shellQuote(sourceCfgName)))
 		os.Exit(1)
 	}
 
 	// Sort descending so the newest dump appears first.
 	sort.Sort(sort.Reverse(sort.StringSlice(dumps)))
 
-	idx, err := interactivelist.SelectOne(fmt.Sprintf("Select dump for %q (newest first)", sourceCfgName), dumps)
+	// Labels carry the dump's size and age; the index still maps back into
+	// dumps, so the returned path is unchanged.
+	labels := make([]string, len(dumps))
+	now := time.Now()
+	for i, d := range dumps {
+		labels[i] = dumpOptionLabel(filepath.Join(s.WorkDir, d), d, now)
+	}
+
+	idx, err := interactivelist.SelectOne(fmt.Sprintf("Choose a dump of %q (newest first)", sourceCfgName), labels)
 	if err != nil {
-		fmt.Println("Invalid selection")
-		os.Exit(1)
+		ui.Fatal("Invalid selection")
 	}
 
 	return filepath.Join(s.WorkDir, dumps[idx])
+}
+
+// dumpOptionLabel renders a dump directory for the picker:
+// "name  12.3 MB · 3h ago" (size and age dimmed, omitted if unreadable).
+func dumpOptionLabel(path, name string, now time.Time) string {
+	var meta []string
+	if size := ui.DirSize(path); size > 0 {
+		meta = append(meta, ui.Bytes(size))
+	}
+	if info, err := os.Stat(path); err == nil {
+		meta = append(meta, ago(now.Sub(info.ModTime())))
+	}
+	if len(meta) == 0 {
+		return name
+	}
+	return name + "  " + ui.Muted(strings.Join(meta, " · "))
+}
+
+// ago renders an elapsed duration compactly: "just now", "5m ago",
+// "3h ago", "2d ago".
+func ago(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 // askOverwriteTables asks the user whether to pass --overwrite-tables to myloader.

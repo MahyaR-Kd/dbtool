@@ -6,6 +6,8 @@ import (
 	"dbtool/internal/config"
 	"dbtool/internal/interactivelist"
 	"dbtool/internal/types"
+	"dbtool/internal/ui"
+
 	"github.com/spf13/cobra"
 )
 
@@ -43,36 +45,40 @@ var configDuplicateCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		configs := config.Load()
 		if len(configs) == 0 {
-			fmt.Println("No configs found")
+			ui.Empty("No configs yet", "Create one with "+ui.Code("dbtool config add"))
 			return
 		}
 		options := make([]string, len(configs))
 		for i, c := range configs {
-			options[i] = fmt.Sprintf("%s (%s:%s)", c.Name, c.Host, c.Port)
+			options[i] = configOption(c)
 		}
-		idx, err := interactivelist.SelectOne("Select config to duplicate", options)
+		idx, err := interactivelist.SelectOne("Choose a config to duplicate", options)
 		if err != nil {
-			fmt.Println("Invalid selection")
+			ui.Error("Invalid selection")
 			return
 		}
 		copy := cloneConfig(configs[idx])
 		copy.Name = availableCopyName(copy.Name, configs)
 		copy = config.EditInteractive(copy)
 		if copy.Name == "" {
-			fmt.Println("Config name cannot be empty.")
+			ui.Error("Config name cannot be empty.")
 			return
 		}
 		for _, existing := range configs {
 			if existing.Name == copy.Name {
-				fmt.Printf("A config named %q already exists.\n", copy.Name)
+				ui.Error("A config named %q already exists.", copy.Name)
 				return
 			}
 		}
-		if err := config.Save(copy); err != nil {
-			fmt.Println("Failed to save config:", err)
+		if !confirmSaveConfig(copy) {
 			return
 		}
-		fmt.Printf("Duplicated as %q.\n", copy.Name)
+		if err := config.Save(copy); err != nil {
+			ui.Error("Failed to save config: %v", err)
+			return
+		}
+		ui.Success("Duplicated %s as %s", ui.Bold(configs[idx].Name), ui.Bold(copy.Name))
+		ui.Hint("Back it up now with %s", ui.Code("dbtool dump --name "+shellQuote(copy.Name)))
 	},
 }
 

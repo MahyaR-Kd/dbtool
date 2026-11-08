@@ -1,10 +1,9 @@
 package cmd
 
 import (
-	"fmt"
-
 	"dbtool/internal/config"
 	"dbtool/internal/interactivelist"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -32,7 +31,7 @@ var configEditCmd = &cobra.Command{
 		configs := config.Load()
 
 		if len(configs) == 0 {
-			fmt.Println("No configs found")
+			ui.Empty("No configs yet", "Create one with "+ui.Code("dbtool config add"))
 			return
 		}
 
@@ -45,7 +44,7 @@ var configEditCmd = &cobra.Command{
 				}
 			}
 			if found == -1 {
-				fmt.Println("Config not found:", configEditName)
+				ui.Error("Config not found: %s", configEditName)
 				return
 			}
 
@@ -99,37 +98,40 @@ var configEditCmd = &cobra.Command{
 			}
 
 			if updated.SSH && (updated.SSHHost == "" || updated.SSHUser == "" || updated.SSHPort == "") {
-				fmt.Println("SSH configs require SSH host, user, and port.")
+				ui.Error("SSH configs require SSH host, user, and port.")
 				return
 			}
 			configs[found] = updated
 			if err := config.Overwrite(configs); err != nil {
-				fmt.Println("Failed to save configs:", err)
+				ui.Error("Failed to save configs: %v", err)
 				return
 			}
-			fmt.Println("Updated successfully")
+			ui.Success("Config %s updated", ui.Bold(updated.Name))
 			return
 		}
 
 		options := make([]string, len(configs))
 		for i, c := range configs {
-			options[i] = fmt.Sprintf("%s (%s:%s)", c.Name, c.Host, c.Port)
+			options[i] = configOption(c)
 		}
 
-		idx, err := interactivelist.SelectOne("Select config to edit", options)
+		idx, err := interactivelist.SelectOne("Choose a config to edit", options)
 		if err != nil {
-			fmt.Println("Invalid selection")
+			ui.Error("Invalid selection")
 			return
 		}
 
 		updated := config.EditInteractive(configs[idx])
+		if !confirmSaveConfig(updated) {
+			return
+		}
 		configs[idx] = updated
 		if err := config.Overwrite(configs); err != nil {
-			fmt.Println("Failed to save configs:", err)
+			ui.Error("Failed to save configs: %v", err)
 			return
 		}
 
-		fmt.Println("Updated successfully")
+		configSaved(updated.Name)
 	},
 }
 

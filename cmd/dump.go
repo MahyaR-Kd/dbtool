@@ -5,6 +5,7 @@ import (
 	"dbtool/internal/db"
 	"dbtool/internal/logger"
 	"dbtool/internal/types"
+
 	"github.com/spf13/cobra"
 )
 

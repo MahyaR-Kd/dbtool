@@ -1,10 +1,9 @@
 package cmd
 
 import (
-	"fmt"
-
 	"dbtool/internal/config"
 	"dbtool/internal/interactivelist"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -18,7 +17,7 @@ var deleteCmd = &cobra.Command{
 		configs := config.Load()
 
 		if len(configs) == 0 {
-			fmt.Println("No configs found")
+			ui.Empty("No configs yet", "Create one with "+ui.Code("dbtool config add"))
 			return
 		}
 
@@ -31,36 +30,37 @@ var deleteCmd = &cobra.Command{
 				}
 			}
 			if found == -1 {
-				fmt.Println("Config not found:", configDeleteName)
+				ui.Error("Config not found: %s", configDeleteName)
 				return
 			}
 			configs = append(configs[:found], configs[found+1:]...)
 			if err := config.Overwrite(configs); err != nil {
-				fmt.Println("Failed to save configs:", err)
+				ui.Error("Failed to save configs: %v", err)
 				return
 			}
-			fmt.Println("Deleted successfully")
+			ui.Success("Config %s deleted", ui.Bold(configDeleteName))
 			return
 		}
 
 		options := make([]string, len(configs))
 		for i, c := range configs {
-			options[i] = fmt.Sprintf("%s (%s:%s)", c.Name, c.Host, c.Port)
+			options[i] = configOption(c)
 		}
 
-		idx, err := interactivelist.SelectOne("Select config to delete", options)
+		idx, err := interactivelist.SelectOne("Choose a config to delete", options)
 		if err != nil {
-			fmt.Println("Invalid selection")
+			ui.Error("Invalid selection")
 			return
 		}
 
+		deleted := configs[idx].Name
 		configs = append(configs[:idx], configs[idx+1:]...)
 		if err := config.Overwrite(configs); err != nil {
-			fmt.Println("Failed to save configs:", err)
+			ui.Error("Failed to save configs: %v", err)
 			return
 		}
 
-		fmt.Println("Deleted successfully")
+		ui.Success("Config %s deleted", ui.Bold(deleted))
 	},
 }
 

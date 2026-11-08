@@ -1,10 +1,10 @@
 package cmd
 
 import (
-	"fmt"
-
 	"dbtool/internal/interactivelist"
 	"dbtool/internal/job"
+	"dbtool/internal/ui"
+
 	"github.com/spf13/cobra"
 )
 
@@ -17,7 +17,7 @@ var jobDeleteCmd = &cobra.Command{
 		jobs := job.Load()
 
 		if len(jobs) == 0 {
-			fmt.Println("No jobs found")
+			ui.Empty("No jobs yet", "Create one with "+ui.Code("dbtool job add"))
 			return
 		}
 
@@ -30,36 +30,37 @@ var jobDeleteCmd = &cobra.Command{
 				}
 			}
 			if found == -1 {
-				fmt.Println("Job not found:", jobDeleteName)
+				ui.Error("Job not found: %s", jobDeleteName)
 				return
 			}
 			jobs = append(jobs[:found], jobs[found+1:]...)
 			if err := job.Overwrite(jobs); err != nil {
-				fmt.Println("Failed to save jobs:", err)
+				ui.Error("Failed to save jobs: %v", err)
 				return
 			}
-			fmt.Println("Deleted successfully")
+			ui.Success("Job %s deleted", ui.Bold(jobDeleteName))
 			return
 		}
 
 		options := make([]string, len(jobs))
 		for i, j := range jobs {
-			options[i] = fmt.Sprintf("%s [%s] schedule=%q", j.Name, j.Type, j.Schedule)
+			options[i] = jobOption(j)
 		}
 
-		idx, err := interactivelist.SelectOne("Select job to delete", options)
+		idx, err := interactivelist.SelectOne("Choose a job to delete", options)
 		if err != nil {
-			fmt.Println("Invalid selection")
+			ui.Error("Invalid selection")
 			return
 		}
 
+		deleted := jobs[idx].Name
 		jobs = append(jobs[:idx], jobs[idx+1:]...)
 		if err := job.Overwrite(jobs); err != nil {
-			fmt.Println("Failed to save jobs:", err)
+			ui.Error("Failed to save jobs: %v", err)
 			return
 		}
 
-		fmt.Println("Deleted successfully")
+		ui.Success("Job %s deleted", ui.Bold(deleted))
 	},
 }
 

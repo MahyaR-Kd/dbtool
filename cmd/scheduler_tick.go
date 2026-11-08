@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	"fmt"
 	"time"
 
 	"dbtool/internal/job"
 	"dbtool/internal/logger"
+
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +28,7 @@ var schedulerTickCommand = &cobra.Command{
 		for _, j := range jobs {
 			if job.MatchSchedule(j.Schedule, now) {
 				logger.Info("[scheduler_tick] triggering job %q (%s)", j.Name, j.Type)
-				fmt.Printf("[scheduler] running job %q (%s)\n", j.Name, j.Type)
+				// job.RunJob prints its own "Running job …" line.
 				job.RunJob(j)
 			}
 		}

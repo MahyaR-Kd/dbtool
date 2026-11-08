@@ -1,15 +1,13 @@
 package cmd
 
 import (
-	"bufio"
-	"fmt"
-	"os"
 	"strings"
 
 	"dbtool/internal/interactivelist"
 	"dbtool/internal/logger"
 	"dbtool/internal/secureinput"
 	"dbtool/internal/settings"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -47,8 +45,7 @@ Non-interactive example:
 
 		if hasFlags {
 			if !cmd.Flags().Changed("host") || !cmd.Flags().Changed("port") {
-				fmt.Println("--host and --port are required.")
-				os.Exit(1)
+				ui.Fatal("--host and --port are required.")
 			}
 			s.Proxy.Host = proxySetHost
 			s.Proxy.Port = proxySetPort
@@ -59,7 +56,7 @@ Non-interactive example:
 				s.Proxy.Password = proxySetPassword
 			}
 		} else {
-			reader := bufio.NewReader(os.Stdin)
+			reader := secureinput.Stdin()
 
 			readSecret := func(prompt, cur string) string {
 				placeholder := "optional"
@@ -68,7 +65,7 @@ Non-interactive example:
 				}
 				val, err := secureinput.ReadPassword(interactivelist.PromptLabel(prompt, placeholder))
 				if err != nil {
-					fmt.Println("Error reading input:", err)
+					ui.Error("Could not read input: %v", err)
 					return cur
 				}
 				val = strings.TrimSpace(val)
@@ -84,20 +81,18 @@ Non-interactive example:
 			s.Proxy.Password = readSecret("Proxy password", s.Proxy.Password)
 
 			if s.Proxy.Host == "" || s.Proxy.Port == "" {
-				fmt.Println("Error: host and port are required.")
-				os.Exit(1)
+				ui.Fatal("Host and port are required.")
 			}
 		}
 		s.Proxy.Disabled = false
 
 		if err := settings.Save(s); err != nil {
 			logger.Error("failed to save proxy settings: %v", err)
-			fmt.Println("Error saving settings:", err)
-			os.Exit(1)
+			ui.Fatal("Could not save settings: %v", err)
 		}
 
 		logger.Info("proxy settings saved (host=%s port=%s)", s.Proxy.Host, s.Proxy.Port)
-		fmt.Printf("Proxy set to %s:%s\n", s.Proxy.Host, s.Proxy.Port)
+		ui.Success("Proxy set to %s:%s", s.Proxy.Host, s.Proxy.Port)
 	},
 }
 
@@ -107,18 +102,21 @@ var proxyShowCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		s := settings.Load()
 		if !s.Proxy.Configured() {
-			fmt.Println("No proxy configured.")
+			ui.Empty("No proxy configured", "Set one with "+ui.Code("dbtool setting proxy set"))
 			return
 		}
-		fmt.Printf("Status:     %s\n", enabledLabel(s.Proxy.Enabled()))
-		fmt.Printf("Proxy host: %s\n", s.Proxy.Host)
-		fmt.Printf("Proxy port: %s\n", s.Proxy.Port)
-		if s.Proxy.User != "" {
-			fmt.Printf("Proxy user: %s\n", s.Proxy.User)
-		}
+		password := ""
 		if s.Proxy.Password != "" {
-			fmt.Printf("Proxy pass: %s\n", maskedPlaceholder)
+			password = maskedPlaceholder
 		}
+		ui.Println(ui.Bold("SOCKS5 proxy"))
+		ui.PrintKeyValues(
+			ui.KV{Key: "Status", Value: enabledStatus(s.Proxy.Enabled())},
+			ui.KV{Key: "Host", Value: s.Proxy.Host},
+			ui.KV{Key: "Port", Value: s.Proxy.Port},
+			ui.KV{Key: "User", Value: s.Proxy.User},
+			ui.KV{Key: "Password", Value: password},
+		)
 	},
 }
 
@@ -146,11 +144,10 @@ var proxyClearCmd = &cobra.Command{
 		s.Proxy = settings.ProxyConfig{}
 		if err := settings.Save(s); err != nil {
 			logger.Error("failed to clear proxy settings: %v", err)
-			fmt.Println("Error saving settings:", err)
-			os.Exit(1)
+			ui.Fatal("Could not save settings: %v", err)
 		}
 		logger.Info("proxy settings cleared")
-		fmt.Println("Proxy configuration cleared.")
+		ui.Success("Proxy configuration cleared.")
 	},
 }
 

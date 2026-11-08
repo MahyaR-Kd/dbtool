@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"dbtool/internal/logger"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -69,6 +70,32 @@ func levelOfLine(line string) (logger.Level, bool) {
 	return lvl, ok
 }
 
+// colorizeLogLine colors the "[LEVEL]" tag of a log line — ERROR red, WARN
+// yellow, DEBUG dimmed, INFO unchanged — leaving the rest of the line as is.
+// ui disables colors when stdout is not a terminal, so piped output stays
+// byte-for-byte identical to the log file.
+func colorizeLogLine(line string) string {
+	lvl, ok := levelOfLine(line)
+	if !ok || !ui.ColorEnabled() {
+		return line
+	}
+	var style func(string) string
+	switch lvl {
+	case logger.LevelError:
+		style = ui.Red
+	case logger.LevelWarn:
+		style = ui.Yellow
+	case logger.LevelDebug:
+		style = ui.Muted
+	default:
+		return line
+	}
+	open := strings.Index(line, " [")
+	end := strings.Index(line[open+2:], "]")
+	tagStart, tagEnd := open+1, open+2+end+1
+	return line[:tagStart] + style(line[tagStart:tagEnd]) + line[tagEnd:]
+}
+
 // shouldShow returns true when the line's level is at or above minLevel.
 func shouldShow(line string, minLevel *logger.Level) bool {
 	if minLevel == nil {
@@ -85,7 +112,7 @@ func shouldShow(line string, minLevel *logger.Level) bool {
 func printLog(path string, minLevel *logger.Level) error {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
-		fmt.Println("No log file found. Run some dbtool commands to generate logs.")
+		ui.Empty("No log file found", "Run some dbtool commands to generate logs")
 		return nil
 	}
 	if err != nil {
@@ -97,7 +124,7 @@ func printLog(path string, minLevel *logger.Level) error {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if shouldShow(line, minLevel) {
-			fmt.Println(line)
+			ui.Println(colorizeLogLine(line))
 		}
 	}
 	return scanner.Err()
@@ -117,7 +144,7 @@ func followLog(path string, minLevel *logger.Level) error {
 		return fmt.Errorf("cannot seek log file: %w", err)
 	}
 
-	fmt.Println("--- following log (Ctrl+C to stop) ---")
+	ui.Info("Following log %s", ui.Muted("(Ctrl+C to stop)"))
 
 	reader := bufio.NewReader(f)
 	for {
@@ -125,7 +152,7 @@ func followLog(path string, minLevel *logger.Level) error {
 		if len(line) > 0 {
 			trimmed := strings.TrimRight(line, "\n")
 			if shouldShow(trimmed, minLevel) {
-				fmt.Println(trimmed)
+				ui.Println(colorizeLogLine(trimmed))
 			}
 		}
 		if err != nil {
@@ -149,7 +176,7 @@ func openOrWait(path string) (*os.File, error) {
 			return nil, fmt.Errorf("cannot open log file: %w", err)
 		}
 		if i == 0 {
-			fmt.Println("Waiting for log file to appear...")
+			ui.Info("Waiting for log file to appear…")
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

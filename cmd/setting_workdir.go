@@ -7,6 +7,8 @@ import (
 
 	"dbtool/internal/logger"
 	"dbtool/internal/settings"
+	"dbtool/internal/ui"
+
 	"github.com/spf13/cobra"
 )
 
@@ -59,7 +61,7 @@ Examples:
 		}
 
 		logger.Info("work directory set to: %s", s.WorkDir)
-		fmt.Println("Work directory set to:", s.WorkDir)
+		ui.Success("Work directory set to %s", s.WorkDir)
 		return nil
 	},
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"dbtool/internal/logger"
+	"dbtool/internal/ui"
+
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +33,7 @@ var scheduleEnableCmd = &cobra.Command{
 
 		current, _ := readCrontab()
 		if strings.Contains(current, entry) {
-			fmt.Println("Scheduler is already enabled.")
+			ui.Info("Scheduler is already enabled.")
 			return nil
 		}
 
@@ -49,7 +51,7 @@ var scheduleEnableCmd = &cobra.Command{
 		}
 
 		logger.Info("scheduler enabled (cron entry: %s)", entry)
-		fmt.Println("Scheduler enabled. Jobs will run every minute in the background.")
+		ui.Success("Scheduler enabled. Jobs will run every minute in the background.")
 		return nil
 	},
 }
@@ -60,13 +62,13 @@ var scheduleDisableCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		current, err := readCrontab()
 		if err != nil {
-			fmt.Println("No crontab found; scheduler is already disabled.")
+			ui.Info("No crontab found; scheduler is already disabled.")
 			return nil
 		}
 
 		cleaned := removeDbtoolLine(current)
 		if cleaned == current {
-			fmt.Println("Scheduler is already disabled.")
+			ui.Info("Scheduler is already disabled.")
 			return nil
 		}
 
@@ -76,7 +78,7 @@ var scheduleDisableCmd = &cobra.Command{
 		}
 
 		logger.Info("scheduler disabled")
-		fmt.Println("Scheduler disabled.")
+		ui.Success("Scheduler disabled.")
 		return nil
 	},
 }

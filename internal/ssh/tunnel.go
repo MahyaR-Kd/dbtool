@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"dbtool/internal/logger"
+	"dbtool/internal/ui"
 )
 
 func getFreePort() string {
@@ -46,8 +47,7 @@ func StartTunnel(sshUser, sshHost, sshPort, dbHost, dbPort, localPort string) (*
 
 	if err := cmd.Start(); err != nil {
 		logger.Error("SSH tunnel failed to start: %v", err)
-		fmt.Println("SSH failed")
-		os.Exit(1)
+		ui.Fatal("SSH tunnel failed to start: %v", err)
 	}
 
 	logger.Debug("SSH tunnel started (PID=%d), waiting 2s for connection", cmd.Process.Pid)

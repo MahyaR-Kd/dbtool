@@ -14,14 +14,14 @@ import (
 	"dbtool/internal/logger"
 	"dbtool/internal/paths"
 	"dbtool/internal/types"
+	"dbtool/internal/ui"
 )
 
 func configFilePath() string {
 	dir, err := paths.DbtoolDir()
 	if err != nil {
 		logger.Error("cannot open config storage: %v", err)
-		fmt.Println("Cannot open config storage:", err)
-		os.Exit(1)
+		ui.Fatal("Cannot open config storage: %v", err)
 	}
 	return filepath.Join(dir, "dbtool.conf")
 }

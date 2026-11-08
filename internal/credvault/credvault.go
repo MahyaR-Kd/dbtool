@@ -39,6 +39,7 @@ import (
 	"dbtool/internal/interactivelist"
 	"dbtool/internal/paths"
 	"dbtool/internal/secureinput"
+	"dbtool/internal/ui"
 )
 
 const magicPrefix = "cred:v1:"
@@ -156,7 +157,7 @@ func RotateWithCommit(encryptedValues []string, commit func([]string, []byte) er
 		plaintexts[i] = pt
 	}
 
-	fmt.Println("Current master password verified. Choose a new one.")
+	ui.Success("Current master password verified. Choose a new one.")
 	newKey, record, err := prepareNewPassword()
 	if err != nil {
 		return nil, fmt.Errorf("set new master password: %w", err)
@@ -193,9 +194,9 @@ func deriveKey(password string, salt []byte) []byte {
 // setup prints first-time-setup context, then delegates to
 // createNewPassword. Used by getKey() when no master password exists yet.
 func setup() ([]byte, error) {
-	fmt.Println("No master password is set up yet for storing DB config passwords.")
-	fmt.Println("It is never stored anywhere — only you know it. If you forget it, any")
-	fmt.Println("passwords already saved under it cannot be recovered and must be re-entered.")
+	ui.Info("No master password is set up yet for storing DB config passwords.")
+	ui.Hint("It is never stored anywhere — only you know it.")
+	ui.Hint("If you forget it, passwords already saved under it cannot be recovered and must be re-entered.")
 	return createNewPassword()
 }
 
@@ -212,7 +213,7 @@ func createNewPassword() ([]byte, error) {
 	if err := persist(record); err != nil {
 		return nil, err
 	}
-	fmt.Println("Master password set.")
+	ui.Success("Master password set.")
 	return key, nil
 }
 
@@ -223,7 +224,7 @@ func prepareNewPassword() ([]byte, verificationRecord, error) {
 			return nil, verificationRecord{}, err
 		}
 		if p1 == "" {
-			fmt.Println("Master password cannot be empty.")
+			ui.Error("Master password cannot be empty.")
 			continue
 		}
 		p2, err := readPasswordFunc(interactivelist.PromptLabel("Confirm master password", ""))
@@ -231,7 +232,7 @@ func prepareNewPassword() ([]byte, verificationRecord, error) {
 			return nil, verificationRecord{}, err
 		}
 		if p1 != p2 {
-			fmt.Println("Passwords did not match. Try again.")
+			ui.Error("Passwords did not match. Try again.")
 			continue
 		}
 
@@ -301,7 +302,7 @@ func unlock() ([]byte, error) {
 			return key, nil
 		}
 		if attempt < maxAttempts {
-			fmt.Println("Incorrect master password, try again.")
+			ui.Error("Incorrect master password, try again.")
 		}
 	}
 	return nil, errors.New("incorrect master password")

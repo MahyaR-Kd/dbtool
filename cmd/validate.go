@@ -1,10 +1,11 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
 	"dbtool/internal/db"
+	"dbtool/internal/ui"
+
 	"github.com/spf13/cobra"
 )
 
@@ -29,23 +30,20 @@ Example:
   dbtool validate --dir /root/dbtool-backups/mydb_2026-09-10_132320`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if validateDir == "" {
-			fmt.Println("--dir is required.")
-			os.Exit(1)
+			ui.Fatal("--dir is required.")
 		}
 
 		info, err := os.Stat(validateDir)
 		if err != nil {
-			fmt.Printf("Cannot access %s: %v\n", validateDir, err)
-			os.Exit(1)
+			ui.Fatal("Cannot access %s: %v", validateDir, err)
 		}
 		if !info.IsDir() {
-			fmt.Printf("Not a directory: %s\n", validateDir)
-			os.Exit(1)
+			ui.Fatal("Not a directory: %s", validateDir)
 		}
 
 		issues := db.ValidateDump(validateDir)
 		if len(issues) == 0 {
-			fmt.Println("No issues found — every table's INSERT statements include all expected columns.")
+			ui.Success("No issues found — every table's INSERT statements include all expected columns.")
 			return
 		}
 

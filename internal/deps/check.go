@@ -3,6 +3,7 @@ package deps
 import (
 	"dbtool/internal/interactivelist"
 	"dbtool/internal/logger"
+	"dbtool/internal/ui"
 	"fmt"
 	"os"
 	"os/exec"
@@ -44,7 +45,8 @@ func installCmd(tools []string, id string) (string, []string) {
 		return "sudo", args
 	case "darwin":
 		if _, err := exec.LookPath("brew"); err != nil {
-			fmt.Println("Homebrew (brew) is not installed. Visit https://brew.sh to install it, then re-run.")
+			ui.Warn("Homebrew (brew) is not installed.")
+			ui.Hint("Visit https://brew.sh to install it, then re-run")
 			return "", nil
 		}
 		args := append([]string{"install"}, tools...)
@@ -74,24 +76,24 @@ func Require(tools ...string) {
 		return
 	}
 
-	fmt.Printf("Missing required tool(s): %s\n", strings.Join(missing, ", "))
+	ui.Error("Missing required tool(s): %s", strings.Join(missing, ", "))
 
 	id := osID()
 	cmd, args := installCmd(missing, id)
 
 	if cmd == "" {
 		logger.Error("cannot install missing tools automatically (OS=%s): %s", id, strings.Join(missing, ", "))
-		fmt.Println("Please install the missing tools and try again.")
+		ui.Hint("Please install the missing tools and try again")
 		os.Exit(1)
 	}
 
-	fmt.Printf("Suggested install command: %s %s\n", cmd, strings.Join(args, " "))
+	ui.Hint("Suggested install command: %s", ui.Code(cmd+" "+strings.Join(args, " ")))
 
 	if !interactivelist.Confirm("Install now?", false) {
 		logger.Warn("user declined to install missing tools: %s", strings.Join(missing, ", "))
-		fmt.Println("Aborted. Please install the required tools and try again.")
-		os.Exit(1)
+		ui.Fatal("Aborted. Please install the required tools and try again.")
 	}
+	ui.Step("Installing %s", strings.Join(missing, ", "))
 
 	logger.Info("installing missing tools: %s", strings.Join(missing, ", "))
 	installExec := exec.Command(cmd, args...)
@@ -100,8 +102,7 @@ func Require(tools ...string) {
 
 	if err := installExec.Run(); err != nil {
 		logger.Error("installation failed for tools %s: %v", strings.Join(missing, ", "), err)
-		fmt.Println("Installation failed:", err)
-		os.Exit(1)
+		ui.Fatal("Installation failed: %v", err)
 	}
 
 	// Verify again after installation
@@ -114,11 +115,11 @@ func Require(tools ...string) {
 
 	if len(stillMissing) > 0 {
 		logger.Error("tools still missing after install: %s", strings.Join(stillMissing, ", "))
-		fmt.Printf("Still missing after install: %s\n", strings.Join(stillMissing, ", "))
-		os.Exit(1)
+		ui.Fatal("Still missing after install: %s", strings.Join(stillMissing, ", "))
 	}
 
 	logger.Info("successfully installed tools: %s", strings.Join(missing, ", "))
+	ui.Success("Installed %s", strings.Join(missing, ", "))
 }
 
 // Offer checks whether tool is on PATH and, if not, offers to install it
@@ -134,7 +135,7 @@ func Offer(tool, why string) {
 		return
 	}
 
-	fmt.Printf("Tip: %s is not installed. %s\n", tool, why)
+	ui.Info("%s is not installed. %s", tool, why)
 
 	id := osID()
 	cmd, args := installCmd([]string{tool}, id)
@@ -142,10 +143,11 @@ func Offer(tool, why string) {
 		return
 	}
 
-	fmt.Printf("Suggested install command: %s %s\n", cmd, strings.Join(args, " "))
+	ui.Hint("Suggested install command: %s", ui.Code(cmd+" "+strings.Join(args, " ")))
 	if !interactivelist.Confirm(fmt.Sprintf("Install %s now?", tool), false) {
 		return
 	}
+	ui.Step("Installing %s", tool)
 
 	logger.Info("installing optional tool: %s", tool)
 	installExec := exec.Command(cmd, args...)
@@ -154,16 +156,16 @@ func Offer(tool, why string) {
 
 	if err := installExec.Run(); err != nil {
 		logger.Warn("optional tool %s failed to install: %v", tool, err)
-		fmt.Println("Installation failed:", err)
+		ui.Warn("Installation failed: %v", err)
 		return
 	}
 
 	if _, err := exec.LookPath(tool); err != nil {
 		logger.Warn("optional tool %s still missing after install", tool)
-		fmt.Printf("%s still not found after install.\n", tool)
+		ui.Warn("%s still not found after install.", tool)
 		return
 	}
 
 	logger.Info("successfully installed optional tool: %s", tool)
-	fmt.Printf("%s installed.\n", tool)
+	ui.Success("%s installed.", tool)
 }

@@ -1,7 +1,6 @@
 package rotate
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"dbtool/internal/logger"
 	"dbtool/internal/s3store"
 	"dbtool/internal/settings"
+	"dbtool/internal/ui"
 )
 
 // dumpTimeLayout matches the timestamp suffix used in dump directory names
@@ -57,10 +57,10 @@ func RotateOldDumps(workDir, configName string, retentionDays int) {
 			fullPath := filepath.Join(workDir, name)
 			if err := os.RemoveAll(fullPath); err != nil {
 				logger.Error("rotate: failed to remove old dump %q: %v", fullPath, err)
-				fmt.Printf("Warning: could not remove old dump %q: %v\n", fullPath, err)
+				ui.Warn("Could not remove old dump %q: %v", fullPath, err)
 			} else {
 				logger.Info("rotate: removed old dump %q (older than %d days)", fullPath, retentionDays)
-				fmt.Printf("Rotated (removed) old dump: %s\n", fullPath)
+				ui.Info("Rotated (removed) old dump %s", fullPath)
 			}
 		}
 	}
@@ -99,10 +99,10 @@ func RotateOldS3Dumps(cfg settings.S3Config, configName string, retentionDays in
 		if t.Before(cutoff) {
 			if err := s3store.DeleteDump(cfg, name); err != nil {
 				logger.Error("rotate: failed to delete S3 dump %q: %v", name, err)
-				fmt.Printf("Warning: could not remove old S3 dump %q: %v\n", name, err)
+				ui.Warn("Could not remove old S3 dump %q: %v", name, err)
 			} else {
 				logger.Info("rotate: removed old S3 dump %q (older than %d days)", name, retentionDays)
-				fmt.Printf("Rotated (removed) old S3 dump: %s\n", name)
+				ui.Info("Rotated (removed) old S3 dump %s", name)
 			}
 		}
 	}

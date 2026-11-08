@@ -1,12 +1,10 @@
 package cmd
 
 import (
-	"fmt"
-	"os"
-
 	"dbtool/internal/config"
 	"dbtool/internal/credvault"
 	"dbtool/internal/interactivelist"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -32,9 +30,12 @@ var masterPasswordStatusCmd = &cobra.Command{
 	Short: "Show whether a master password is set up",
 	Run: func(cmd *cobra.Command, args []string) {
 		if credvault.IsConfigured() {
-			fmt.Println("Master password is set up.")
+			ui.Println(ui.Bold("Master password"))
+			ui.PrintKeyValues(ui.KV{Key: "Status", Value: ui.Status(true, "set up")})
 		} else {
-			fmt.Println("No master password set up yet — it will be created the first time you save a config password.")
+			ui.Println(ui.Bold("Master password"))
+			ui.PrintKeyValues(ui.KV{Key: "Status", Value: ui.Status(false, "not set up yet")})
+			ui.Hint("It will be created the first time you save a config password")
 		}
 	},
 }
@@ -55,23 +56,22 @@ This does NOT touch job/S3/proxy/Telegram credentials — those are unrelated
 to the master password.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if !credvault.IsConfigured() {
-			fmt.Println("No master password is set up — nothing to reset.")
+			ui.Info("No master password is set up — nothing to reset.")
 			return
 		}
 
 		if !masterPasswordResetForce {
-			fmt.Println("This will permanently clear the saved password on every config that has one.")
+			ui.Warn("This will permanently clear the saved password on every config that has one.")
 			if !interactivelist.Confirm("Continue?", false) {
-				fmt.Println("Aborted.")
+				ui.Info("Aborted.")
 				return
 			}
 		}
 
 		if err := config.ResetMasterPassword(); err != nil {
-			fmt.Println("Failed to reset master password:", err)
-			os.Exit(1)
+			ui.Fatal("Failed to reset master password: %v", err)
 		}
-		fmt.Println("Master password reset. Saved config passwords have been cleared.")
+		ui.Success("Master password reset. Saved config passwords have been cleared.")
 	},
 }
 
@@ -87,15 +87,15 @@ use this when you just want a different master password, and 'reset' only
 when you've forgotten the current one and are starting over.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if !credvault.IsConfigured() {
-			fmt.Println("No master password is set up yet — nothing to change. It will be created the first time you save a config password.")
+			ui.Info("No master password is set up yet — nothing to change.")
+			ui.Hint("It will be created the first time you save a config password")
 			return
 		}
 
 		if err := config.ChangeMasterPassword(); err != nil {
-			fmt.Println("Failed to change master password:", err)
-			os.Exit(1)
+			ui.Fatal("Failed to change master password: %v", err)
 		}
-		fmt.Println("Master password changed.")
+		ui.Success("Master password changed.")
 	},
 }
 

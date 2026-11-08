@@ -7,6 +7,7 @@ import (
 	"dbtool/internal/archivecrypt"
 	"dbtool/internal/interactivelist"
 	"dbtool/internal/secureinput"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -58,7 +59,7 @@ then DBTOOL_DECRYPT_PASSWORD, then an interactive masked prompt.`,
 			return fmt.Errorf("close %s: %w", outputPath, err)
 		}
 
-		fmt.Println("Decrypted:", outputPath)
+		ui.Success("Decrypted %s", outputPath)
 		return nil
 	},
 }

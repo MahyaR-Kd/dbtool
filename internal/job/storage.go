@@ -12,6 +12,7 @@ import (
 	"dbtool/internal/logger"
 	"dbtool/internal/paths"
 	"dbtool/internal/secret"
+	"dbtool/internal/ui"
 )
 
 func jobFilePath() string {
@@ -49,7 +50,7 @@ func load() (jobs []Config, needsMigration bool) {
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
-			fmt.Println("Failed to close job file:", err)
+			ui.Error("Failed to close job file: %v", err)
 			logger.Error("Failed to close job file: %v", err)
 		}
 	}(file)

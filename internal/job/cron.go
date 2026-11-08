@@ -15,6 +15,7 @@ import (
 	"dbtool/internal/paths"
 	"dbtool/internal/s3store"
 	"dbtool/internal/settings"
+	"dbtool/internal/ui"
 )
 
 // cronField supports lists, ranges, and positive steps with bounded values.
@@ -118,7 +119,7 @@ func RunJob(j Config) {
 		logger.Error("invalid schedule for job %q: %v", j.Name, err)
 		return
 	}
-	fmt.Printf("[schedule] running job %q (%s)\n", j.Name, j.Type)
+	ui.Step("Running job %s (%s)", j.Name, j.Type)
 	logger.Info("[schedule] running job %q (type=%s)", j.Name, j.Type)
 
 	s := settings.Load()
@@ -139,23 +140,23 @@ func RunJob(j Config) {
 			if dumpName == "" || err != nil {
 				if err != nil {
 					logger.Warn("[schedule] job %q: S3 lookup error: %v", j.Name, err)
-					fmt.Printf("[schedule] job %q: S3 lookup error: %v\n", j.Name, err)
+					ui.Error("Job %q: S3 lookup error: %v", j.Name, err)
 				} else {
 					logger.Warn("[schedule] job %q: no S3 dump found for prefix %q", j.Name, j.SrcConfigName)
-					fmt.Printf("[schedule] job %q: no S3 dump found for prefix %q\n", j.Name, j.SrcConfigName)
+					ui.Error("Job %q: no S3 dump found for prefix %q", j.Name, j.SrcConfigName)
 				}
 				return
 			}
 			tmp, err := os.MkdirTemp("", "dbtool-sched-restore-*")
 			if err != nil {
 				logger.Warn("[schedule] job %q: cannot create temp dir: %v", j.Name, err)
-				fmt.Printf("[schedule] job %q: cannot create temp dir: %v\n", j.Name, err)
+				ui.Error("Job %q: cannot create temp dir: %v", j.Name, err)
 				return
 			}
 			localDir, err := s3store.DownloadDump(s.S3, dumpName, tmp)
 			if err != nil {
 				logger.Warn("[schedule] job %q: S3 download error: %v", j.Name, err)
-				fmt.Printf("[schedule] job %q: S3 download error: %v\n", j.Name, err)
+				ui.Error("Job %q: S3 download error: %v", j.Name, err)
 				_ = os.RemoveAll(tmp)
 				return
 			}
@@ -165,20 +166,20 @@ func RunJob(j Config) {
 			dir = db.FindLatestDumpDir(s.WorkDir, j.SrcConfigName)
 			if dir == "" {
 				logger.Warn("[schedule] job %q: no dump directory found for prefix %q", j.Name, j.SrcConfigName)
-				fmt.Printf("[schedule] job %q: no dump directory found for prefix %q\n", j.Name, j.SrcConfigName)
+				ui.Error("Job %q: no dump directory found for prefix %q", j.Name, j.SrcConfigName)
 				return
 			}
 		}
 
 		logger.Info("[schedule] job %q: restoring from %q", j.Name, dir)
-		fmt.Printf("[schedule] job %q: restoring from %q\n", j.Name, dir)
+		ui.Step("Job %q: restoring from %s", j.Name, dir)
 		db.RunRestore(dstCfg, j.DstPassword, dir, j.OverwriteTables)
 
 		if tempDir != "" {
 			logger.Debug("[schedule] cleaning up S3 temp restore dir: %s", tempDir)
 			if err := os.RemoveAll(tempDir); err != nil {
 				logger.Error("[schedule] failed to remove temp dir %s: %v", tempDir, err)
-				fmt.Printf("[schedule] warning: failed to remove temp dir %s — please clean it up manually.\n", tempDir)
+				ui.Warn("Failed to remove temp dir %s — please clean it up manually.", tempDir)
 			}
 		}
 
@@ -194,44 +195,44 @@ func RunJob(j Config) {
 			if dumpName == "" || err != nil {
 				if err != nil {
 					logger.Warn("[schedule] job %q: S3 lookup after dump error: %v", j.Name, err)
-					fmt.Printf("[schedule] job %q: S3 lookup after dump error: %v\n", j.Name, err)
+					ui.Error("Job %q: S3 lookup after dump error: %v", j.Name, err)
 				} else {
 					logger.Warn("[schedule] job %q: no S3 dump found after dump for prefix %q", j.Name, j.SrcConfigName)
-					fmt.Printf("[schedule] job %q: no S3 dump found after dump for prefix %q\n", j.Name, j.SrcConfigName)
+					ui.Error("Job %q: no S3 dump found after dump for prefix %q", j.Name, j.SrcConfigName)
 				}
 				return
 			}
 			tmp, err := os.MkdirTemp("", "dbtool-sched-sync-*")
 			if err != nil {
 				logger.Warn("[schedule] job %q: cannot create temp dir: %v", j.Name, err)
-				fmt.Printf("[schedule] job %q: cannot create temp dir: %v\n", j.Name, err)
+				ui.Error("Job %q: cannot create temp dir: %v", j.Name, err)
 				return
 			}
 			localDir, err := s3store.DownloadDump(s.S3, dumpName, tmp)
 			if err != nil {
 				logger.Warn("[schedule] job %q: S3 download error: %v", j.Name, err)
-				fmt.Printf("[schedule] job %q: S3 download error: %v\n", j.Name, err)
+				ui.Error("Job %q: S3 download error: %v", j.Name, err)
 				_ = os.RemoveAll(tmp)
 				return
 			}
 			logger.Info("[schedule] job %q: restoring %q into destination", j.Name, localDir)
-			fmt.Printf("[schedule] job %q: restoring %q into destination\n", j.Name, localDir)
+			ui.Step("Job %q: restoring %s into destination", j.Name, localDir)
 			db.RunRestore(dstCfg, j.DstPassword, localDir, j.OverwriteTables)
 			logger.Debug("[schedule] cleaning up S3 temp sync dir: %s", tmp)
 			if err := os.RemoveAll(tmp); err != nil {
 				logger.Error("[schedule] failed to remove temp dir %s: %v", tmp, err)
-				fmt.Printf("[schedule] warning: failed to remove temp dir %s — please clean it up manually.\n", tmp)
+				ui.Warn("Failed to remove temp dir %s — please clean it up manually.", tmp)
 			}
 		} else {
 			outDir := db.RunDump(srcCfg, j.SrcPassword)
 			logger.Info("[schedule] job %q: restoring %q into destination", j.Name, outDir)
-			fmt.Printf("[schedule] job %q: restoring %q into destination\n", j.Name, outDir)
+			ui.Step("Job %q: restoring %s into destination", j.Name, outDir)
 			db.RunRestore(dstCfg, j.DstPassword, outDir, j.OverwriteTables)
 		}
 
 	default:
 		logger.Warn("[schedule] unknown job type %q for job %q", j.Type, j.Name)
-		fmt.Printf("[schedule] unknown job type %q for job %q\n", j.Type, j.Name)
+		ui.Error("Job %q: unknown job type %q", j.Name, j.Type)
 	}
 
 	logger.Info("[schedule] job %q (%s) finished", j.Name, j.Type)
@@ -249,11 +250,12 @@ func RunScheduler() {
 	jobs := Load()
 
 	if len(jobs) == 0 {
-		fmt.Println("No jobs configured. Use 'dbtool job' to add one.")
+		ui.Empty("No jobs configured", "Add one with "+ui.Code("dbtool job add"))
 		return
 	}
 
-	fmt.Printf("Scheduler started with %d job(s). Press Ctrl+C to stop.\n", len(jobs))
+	ui.Success("Scheduler started with %s", ui.Plural(len(jobs), "job", "jobs"))
+	ui.Hint("Press Ctrl+C to stop")
 
 	// sleep until the next full minute boundary
 	now := time.Now()
@@ -278,7 +280,7 @@ func RunScheduler() {
 
 				if alreadyRunning {
 					logger.Warn("[schedule] job %q still running at %s, skipping", j.Name, t.Format("15:04"))
-					fmt.Printf("[schedule] job %q still running, skipping\n", j.Name)
+					ui.Warn("Job %q is still running, skipping this run", j.Name)
 					continue
 				}
 

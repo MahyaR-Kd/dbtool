@@ -1,14 +1,12 @@
 package connection
 
 import (
-	"fmt"
-	"os"
-
 	"dbtool/internal/logger"
 	"dbtool/internal/proxy"
 	"dbtool/internal/settings"
 	"dbtool/internal/ssh"
 	"dbtool/internal/types"
+	"dbtool/internal/ui"
 )
 
 // ApplyTunnels inspects the global settings and the config to determine whether
@@ -33,8 +31,7 @@ func ApplyTunnels(cfg types.Config, s settings.Settings) (types.Config, func()) 
 			s.Proxy.User, s.Proxy.Password)
 		if err != nil {
 			logger.Error("failed to start SOCKS5 tunnel for SSH: %v", err)
-			fmt.Println("Failed to start SOCKS5 proxy tunnel:", err)
-			os.Exit(1)
+			ui.Fatal("Failed to start SOCKS5 proxy tunnel: %v", err)
 		}
 		tunnel, port := ssh.StartTunnel(cfg.SSHUser, "127.0.0.1", localSSHPort, cfg.Host, cfg.Port, cfg.LocalPort)
 		cfg.Host = "127.0.0.1"
@@ -43,8 +40,7 @@ func ApplyTunnels(cfg types.Config, s settings.Settings) (types.Config, func()) 
 			stopProxy()
 			if err := tunnel.Process.Kill(); err != nil {
 				logger.Error("failed to kill SSH tunnel process: %v", err)
-				fmt.Println("Error: failed to clean up SSH tunnel process:", err)
-				os.Exit(1)
+				ui.Fatal("Failed to clean up SSH tunnel process: %v", err)
 			}
 		}
 
@@ -61,8 +57,7 @@ func ApplyTunnels(cfg types.Config, s settings.Settings) (types.Config, func()) 
 		cleanup = func() {
 			if err := tunnel.Process.Kill(); err != nil {
 				logger.Error("failed to kill SSH tunnel process: %v", err)
-				fmt.Println("Error: failed to clean up SSH tunnel process:", err)
-				os.Exit(1)
+				ui.Fatal("Failed to clean up SSH tunnel process: %v", err)
 			}
 		}
 
@@ -74,8 +69,7 @@ func ApplyTunnels(cfg types.Config, s settings.Settings) (types.Config, func()) 
 			s.Proxy.User, s.Proxy.Password)
 		if err != nil {
 			logger.Error("failed to start SOCKS5 tunnel: %v", err)
-			fmt.Println("Failed to start SOCKS5 proxy tunnel:", err)
-			os.Exit(1)
+			ui.Fatal("Failed to start SOCKS5 proxy tunnel: %v", err)
 		}
 		cfg.Host = "127.0.0.1"
 		cfg.Port = localPort

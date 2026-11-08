@@ -10,6 +10,7 @@ import (
 	"dbtool/internal/archivecrypt"
 	"dbtool/internal/logger"
 	"dbtool/internal/settings"
+	"dbtool/internal/ui"
 )
 
 // SendTestMessage sends a short text message to cfg.ChatID to verify that the
@@ -101,11 +102,11 @@ func SendDump(cfg settings.TelegramConfig, dumpDir string) error {
 			return section, nil
 		}
 
-		fmt.Printf("Sending %s to Telegram (%d/%d)...\n", partName, i+1, total)
 		doc := documentUpload{filename: partName, caption: caption, newReader: newReader}
 		if err := sendDocument(cfg.BotToken, cfg.ChatID, doc); err != nil {
 			return fmt.Errorf("send chunk %d/%d: %w", i+1, total, err)
 		}
+		ui.Detail("sent %s (%d/%d, %s)", partName, i+1, total, ui.Bytes(r.Length))
 	}
 
 	logger.Info("telegram: finished sending %q (%d chunk(s))", dumpName, total)

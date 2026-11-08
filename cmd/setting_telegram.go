@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"strconv"
@@ -12,6 +11,7 @@ import (
 	"dbtool/internal/secureinput"
 	"dbtool/internal/settings"
 	"dbtool/internal/telegram"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -49,20 +49,17 @@ Non-interactive example:
 
 		if hasFlags {
 			if !cmd.Flags().Changed("chat-id") {
-				fmt.Println("--chat-id is required.")
-				os.Exit(1)
+				ui.Fatal("--chat-id is required.")
 			}
 			token, err := secureinput.ResolveSecret(telegramSetToken, "DBTOOL_TELEGRAM_TOKEN", "Bot token: ")
 			if err != nil {
-				fmt.Println("Error reading bot token:", err)
-				os.Exit(1)
+				ui.Fatal("Could not read bot token: %v", err)
 			}
 			s.Telegram.BotToken = token
 			s.Telegram.ChatID = telegramSetChatID
 			if cmd.Flags().Changed("chunk-size-mb") {
 				if telegramSetChunkSizeMB <= 0 {
-					fmt.Println("--chunk-size-mb must be a positive integer.")
-					os.Exit(1)
+					ui.Fatal("--chunk-size-mb must be a positive integer.")
 				}
 				s.Telegram.ChunkSizeMB = telegramSetChunkSizeMB
 			}
@@ -70,7 +67,7 @@ Non-interactive example:
 				s.Telegram.EncryptionPassword = telegramSetEncryptionPassword
 			}
 		} else {
-			reader := bufio.NewReader(os.Stdin)
+			reader := secureinput.Stdin()
 
 			readSecret := func(prompt, cur string) string {
 				placeholder := ""
@@ -79,7 +76,7 @@ Non-interactive example:
 				}
 				val, err := secureinput.ReadPassword(interactivelist.PromptLabel(prompt, placeholder))
 				if err != nil {
-					fmt.Println("Error reading input:", err)
+					ui.Error("Could not read input: %v", err)
 					return cur
 				}
 				val = strings.TrimSpace(val)
@@ -96,13 +93,13 @@ Non-interactive example:
 			if s.Telegram.ChunkSizeMB <= 0 {
 				curChunk = fmt.Sprintf("default, %d", settings.DefaultTelegramChunkSizeMB)
 			}
-			fmt.Print(interactivelist.PromptLabel("Chunk size in MB", curChunk))
+			ui.Print(interactivelist.PromptLabel("Chunk size in MB", curChunk))
 			chunkStr, _ := reader.ReadString('\n')
 			chunkStr = strings.TrimSpace(chunkStr)
 			if chunkStr != "" {
 				n, err := strconv.Atoi(chunkStr)
 				if err != nil || n <= 0 {
-					fmt.Println("Invalid chunk size; keeping previous value.")
+					ui.Warn("Invalid chunk size; keeping previous value.")
 				} else {
 					s.Telegram.ChunkSizeMB = n
 				}
@@ -111,20 +108,18 @@ Non-interactive example:
 			s.Telegram.EncryptionPassword = readSecret("Archive encryption password (optional — encrypts the archive before sending; leave blank to disable)", s.Telegram.EncryptionPassword)
 
 			if s.Telegram.BotToken == "" || s.Telegram.ChatID == "" {
-				fmt.Println("Error: bot token and chat ID are required.")
-				os.Exit(1)
+				ui.Fatal("Bot token and chat ID are required.")
 			}
 		}
 		s.Telegram.Disabled = false
 
 		if err := settings.Save(s); err != nil {
 			logger.Error("failed to save telegram settings: %v", err)
-			fmt.Println("Error saving settings:", err)
-			os.Exit(1)
+			ui.Fatal("Could not save settings: %v", err)
 		}
 
 		logger.Info("telegram settings saved (chat_id=%s)", s.Telegram.ChatID)
-		fmt.Println("Telegram settings saved.")
+		ui.Success("Telegram settings saved.")
 	},
 }
 
@@ -134,16 +129,17 @@ var telegramShowCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		s := settings.Load()
 		if !s.Telegram.Configured() {
-			fmt.Println("No Telegram bot configured.")
+			ui.Empty("No Telegram bot configured", "Set one up with "+ui.Code("dbtool setting telegram set"))
 			return
 		}
-		fmt.Printf("Status:     %s\n", enabledLabel(s.Telegram.Enabled()))
-		fmt.Printf("Bot token:  %s\n", maskedPlaceholder)
-		fmt.Printf("Chat ID:    %s\n", s.Telegram.ChatID)
-		fmt.Printf("Chunk size: %d MB\n", s.Telegram.ChunkSizeBytes()/(1024*1024))
-		if s.Telegram.EncryptionEnabled() {
-			fmt.Println("Encryption: enabled")
-		}
+		ui.Println(ui.Bold("Telegram delivery"))
+		ui.PrintKeyValues(
+			ui.KV{Key: "Status", Value: enabledStatus(s.Telegram.Enabled())},
+			ui.KV{Key: "Bot token", Value: maskedPlaceholder},
+			ui.KV{Key: "Chat ID", Value: s.Telegram.ChatID},
+			ui.KV{Key: "Chunk size", Value: fmt.Sprintf("%d MB", s.Telegram.ChunkSizeBytes()/(1024*1024))},
+			ui.KV{Key: "Encryption", Value: enabledStatus(s.Telegram.EncryptionEnabled())},
+		)
 	},
 }
 
@@ -171,11 +167,10 @@ var telegramClearCmd = &cobra.Command{
 		s.Telegram = settings.TelegramConfig{}
 		if err := settings.Save(s); err != nil {
 			logger.Error("failed to clear telegram settings: %v", err)
-			fmt.Println("Error saving settings:", err)
-			os.Exit(1)
+			ui.Fatal("Could not save settings: %v", err)
 		}
 		logger.Info("telegram settings cleared")
-		fmt.Println("Telegram configuration cleared.")
+		ui.Success("Telegram configuration cleared.")
 	},
 }
 
@@ -185,18 +180,18 @@ var telegramTestCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		s := settings.Load()
 		if !s.Telegram.Configured() {
-			fmt.Println("No Telegram bot configured. Run 'dbtool setting telegram set' first.")
-			os.Exit(1)
+			fatalWithHint("No Telegram bot configured. Run 'dbtool setting telegram set' first.")
 		}
 		// Testing validates the saved credentials even while routine delivery is disabled.
 		testConfig := s.Telegram
 		testConfig.Disabled = false
+		t := ui.StartTask("Sending test message to chat %s", s.Telegram.ChatID)
 		if err := telegram.SendTestMessage(testConfig); err != nil {
 			logger.Error("telegram test message failed: %v", err)
-			fmt.Println("Failed to send test message:", err)
+			t.Fail(err)
 			os.Exit(1)
 		}
-		fmt.Println("Test message sent successfully.")
+		t.Done("sent successfully")
 	},
 }
 

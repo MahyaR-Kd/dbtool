@@ -11,6 +11,7 @@ import (
 	"dbtool/internal/s3store"
 	"dbtool/internal/secureinput"
 	"dbtool/internal/settings"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -61,8 +62,7 @@ Non-interactive example:
 
 		if hasFlags {
 			if !cmd.Flags().Changed("storage-type") {
-				fmt.Println("--storage-type is required (local or s3).")
-				os.Exit(1)
+				ui.Fatal("--storage-type is required (local or s3).")
 			}
 			switch s3ConfigStorageType {
 			case string(settings.StorageLocal):
@@ -92,21 +92,20 @@ Non-interactive example:
 					s.S3.EncryptionPassword = s3ConfigEncryptionPassword
 				}
 			default:
-				fmt.Printf("Invalid --storage-type %q. Use \"local\" or \"s3\".\n", s3ConfigStorageType)
-				os.Exit(1)
+				ui.Fatal("Invalid --storage-type %q. Use \"local\" or \"s3\".", s3ConfigStorageType)
 			}
 		} else {
-			reader := bufio.NewReader(os.Stdin)
+			reader := secureinput.Stdin()
 
 			options := []string{"Local file storage", "S3 (or S3-compatible) object storage"}
 			idx, err := interactivelist.SelectOne(fmt.Sprintf("Storage backend (current: %s)", s.StorageType), options)
 			if err != nil {
-				fmt.Printf("Selection canceled — keeping current storage type: %s\n", s.StorageType)
+				ui.Info("Selection canceled — keeping current storage type: %s", s.StorageType)
 			} else {
 				switch idx {
 				case 0:
 					s.StorageType = settings.StorageLocal
-					fmt.Println("Storage set to: local")
+					ui.Info("Storage set to: local")
 				case 1:
 					s.StorageType = settings.StorageS3
 					s.S3 = askS3Config(reader, s.S3)
@@ -117,24 +116,14 @@ Non-interactive example:
 
 		if err := settings.Save(s); err != nil {
 			logger.Error("failed to save settings: %v", err)
-			fmt.Println("Error saving settings:", err)
-			os.Exit(1)
+			ui.Fatal("Could not save settings: %v", err)
 		}
 
 		logger.Info("storage settings saved (type=%s)", s.StorageType)
-		fmt.Println("Settings saved.")
+		ui.Success("Settings saved.")
 
 		if s.StorageType == settings.StorageS3 {
-			fmt.Printf("S3 status:   %s\n", enabledLabel(s.S3Enabled()))
-			fmt.Printf("S3 bucket:   %s\n", s.S3.Bucket)
-			fmt.Printf("S3 region:   %s\n", s.S3.Region)
-			fmt.Printf("S3 prefix:   %s\n", s.S3.Prefix)
-			if s.S3.Endpoint != "" {
-				fmt.Printf("S3 endpoint: %s\n", s.S3.Endpoint)
-			}
-			if s.S3.EncryptionEnabled() {
-				fmt.Println("S3 encryption: enabled")
-			}
+			printS3Settings(s)
 		}
 	},
 }
@@ -144,21 +133,39 @@ var s3ShowCmd = &cobra.Command{
 	Short: "Show current storage configuration",
 	Run: func(cmd *cobra.Command, args []string) {
 		s := settings.Load()
-		fmt.Printf("Storage type: %s\n", s.StorageType)
-		if s.StorageType == settings.StorageS3 {
-			fmt.Printf("Status:       %s\n", enabledLabel(s.S3Enabled()))
-			fmt.Printf("Bucket:       %s\n", s.S3.Bucket)
-			fmt.Printf("Region:       %s\n", s.S3.Region)
-			fmt.Printf("Prefix:       %s\n", s.S3.Prefix)
-			fmt.Printf("Endpoint:     %s\n", s.S3.Endpoint)
-			if s.S3.AccessKey != "" {
-				fmt.Printf("Access key:   %s\n", maskedPlaceholder)
+		if s.StorageType != settings.StorageS3 {
+			ui.Println(ui.Bold("Storage"))
+			storageType := string(s.StorageType)
+			if storageType == "" {
+				storageType = string(settings.StorageLocal) // unset means the local default
 			}
-			if s.S3.EncryptionEnabled() {
-				fmt.Println("Encryption:   enabled")
-			}
+			ui.PrintKeyValues(ui.KV{Key: "Type", Value: storageType})
+			return
 		}
+		printS3Settings(s)
 	},
+}
+
+// printS3Settings prints the saved S3 storage configuration as a compact
+// key/value block. Credentials are never printed — the access key is
+// shown as a fixed placeholder and the secret key / encryption password
+// only as on/off states.
+func printS3Settings(s settings.Settings) {
+	accessKey := ""
+	if s.S3.AccessKey != "" {
+		accessKey = maskedPlaceholder
+	}
+	ui.Println(ui.Bold("S3 storage"))
+	ui.PrintKeyValues(
+		ui.KV{Key: "Type", Value: string(s.StorageType)},
+		ui.KV{Key: "Status", Value: enabledStatus(s.S3Enabled())},
+		ui.KV{Key: "Bucket", Value: s.S3.Bucket},
+		ui.KV{Key: "Region", Value: s.S3.Region},
+		ui.KV{Key: "Prefix", Value: s.S3.Prefix},
+		ui.KV{Key: "Endpoint", Value: s.S3.Endpoint},
+		ui.KV{Key: "Access key", Value: accessKey},
+		ui.KV{Key: "Encryption", Value: enabledStatus(s.S3.EncryptionEnabled())},
+	)
 }
 
 var s3EnableCmd = featureToggleCommand("enable", "Enable the saved S3 storage backend", func(s *settings.Settings) (bool, string) {
@@ -183,15 +190,15 @@ var s3TestCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		s := settings.Load()
 		if !s.S3.Configured() {
-			fmt.Println("S3 is not fully configured. Run 'dbtool setting s3 config' first.")
-			os.Exit(1)
+			fatalWithHint("S3 is not fully configured. Run 'dbtool setting s3 config' first.")
 		}
+		t := ui.StartTask("Testing S3 access to %s", s.S3.Bucket)
 		if err := s3store.TestConnection(s.S3); err != nil {
 			logger.Error("S3 connection test failed: %v", err)
-			fmt.Println("S3 test failed:", err)
+			t.Fail(err)
 			os.Exit(1)
 		}
-		fmt.Println("S3 test succeeded: write, read, and delete access confirmed.")
+		t.Done("write, read, and delete access confirmed")
 	},
 }
 
@@ -273,7 +280,7 @@ func askS3Config(reader *bufio.Reader, current settings.S3Config) settings.S3Con
 		}
 		val, err := secureinput.ReadPassword(interactivelist.PromptLabel(prompt, placeholder))
 		if err != nil {
-			fmt.Println("Error reading input:", err)
+			ui.Error("Could not read input: %v", err)
 			return cur
 		}
 		val = strings.TrimSpace(val)

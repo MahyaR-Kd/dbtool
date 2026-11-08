@@ -26,6 +26,12 @@ import (
 // only whatever came after what the first read had already consumed.
 var stdinReader = bufio.NewReader(os.Stdin)
 
+// Stdin returns the process-wide buffered reader over os.Stdin. Every
+// line-based prompt in dbtool (passwords, text inputs, confirms, numbered
+// pickers) reads through this one reader, so piped answers are consumed in
+// order instead of being lost in a second reader's read-ahead buffer.
+func Stdin() *bufio.Reader { return stdinReader }
+
 // ReadPassword prints prompt, then reads a password from stdin.
 //
 // When stdin is an interactive terminal, input is masked: each typed

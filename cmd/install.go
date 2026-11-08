@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"dbtool/internal/deps"
+	"dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -49,13 +49,11 @@ Shell completion is set up automatically for bash, zsh, and fish.`,
 			return fmt.Errorf("failed to install binary to %s: %w", dest, err)
 		}
 
-		fmt.Printf("dbtool installed to %s\n", dest)
-		fmt.Println("You can now run `dbtool` from anywhere.")
+		ui.Success("dbtool installed to %s", dest)
 
 		installCompletion()
 
-		deps.Offer("fzf", "dbtool uses it for an arrow-key/fuzzy-search picker in interactive prompts — without it, those prompts fall back to a plain numbered list.")
-
+		ui.Hint("You can now run %s from anywhere", ui.Code("dbtool"))
 		return nil
 	},
 }
@@ -69,7 +67,7 @@ func installCompletion() {
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Println("Note: could not determine home directory; skipping completion setup.")
+		ui.Warn("Could not determine home directory; skipping completion setup.")
 		return
 	}
 
@@ -79,39 +77,40 @@ func installCompletion() {
 		dest := filepath.Join(dir, "dbtool")
 		generate := func(w io.Writer) error { return rootCmd.GenBashCompletionV2(w, true) }
 		if err := writeCompletion(dir, dest, generate); err != nil {
-			fmt.Printf("Note: could not install bash completion: %v\n", err)
+			ui.Warn("Could not install bash completion: %v", err)
 			return
 		}
-		fmt.Printf("Bash completion installed to %s\n", dest)
+		ui.Success("Bash completion installed to %s", dest)
 
 	case "zsh":
 		dir, err := zshFpathDir()
 		if err != nil {
-			fmt.Printf("Note: could not determine zsh fpath: %v\n", err)
+			ui.Warn("Could not determine zsh fpath: %v", err)
 			return
 		}
 		dest := filepath.Join(dir, "_dbtool")
 		if err := writeCompletion(dir, dest, rootCmd.GenZshCompletion); err != nil {
-			fmt.Printf("Note: could not install zsh completion: %v\n", err)
+			ui.Warn("Could not install zsh completion: %v", err)
 			return
 		}
-		fmt.Printf("Zsh completion installed to %s\n", dest)
+		ui.Success("Zsh completion installed to %s", dest)
 
 	case "fish":
 		dir := filepath.Join(home, ".config", "fish", "completions")
 		dest := filepath.Join(dir, "dbtool.fish")
 		generate := func(w io.Writer) error { return rootCmd.GenFishCompletion(w, true) }
 		if err := writeCompletion(dir, dest, generate); err != nil {
-			fmt.Printf("Note: could not install fish completion: %v\n", err)
+			ui.Warn("Could not install fish completion: %v", err)
 			return
 		}
-		fmt.Printf("Fish completion installed to %s\n", dest)
+		ui.Success("Fish completion installed to %s", dest)
 
 	default:
 		if shell == "" {
-			fmt.Println("Note: $SHELL is not set; skipping completion setup.")
+			ui.Info("$SHELL is not set; skipping completion setup.")
 		} else {
-			fmt.Printf("Note: automatic completion setup is not supported for %q. Supported shells: bash, zsh, fish.\n", shell)
+			ui.Info("Automatic completion setup is not supported for %q.", shell)
+			ui.Hint("Supported shells: bash, zsh, fish")
 		}
 	}
 }
@@ -163,8 +162,8 @@ func chooseInstallDest() (string, error) {
 	if err := os.MkdirAll(userBin, 0755); err != nil {
 		return "", fmt.Errorf("cannot create %s: %w", userBin, err)
 	}
-	fmt.Printf("Note: /usr/local/bin is not writable; installing to %s instead.\n", userBin)
-	fmt.Println("Make sure ~/bin is on your PATH (add it to your shell profile, e.g. PATH=\"$HOME/bin:$PATH\").")
+	ui.Info("/usr/local/bin is not writable; installing to %s instead.", userBin)
+	ui.Hint("Make sure ~/bin is on your PATH — add %s to your shell profile", ui.Code(`PATH="$HOME/bin:$PATH"`))
 	return filepath.Join(userBin, "dbtool"), nil
 }
 

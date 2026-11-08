@@ -1,11 +1,10 @@
 package progress
 
 import (
-	"fmt"
 	"regexp"
 	"strconv"
 
-	"github.com/schollz/progressbar/v3"
+	"dbtool/internal/ui"
 )
 
 // tableProgressRe matches "[current/total]" as emitted by some versions of
@@ -55,36 +54,15 @@ func ParseRestoringTable(line string) bool {
 	return restoringTableRe.MatchString(line)
 }
 
-// New returns a styled, count-based progress bar for use when the total number
-// of tables is known.
-func New(total int, description string) *progressbar.ProgressBar {
-	return progressbar.NewOptions(total,
-		progressbar.OptionSetDescription(fmt.Sprintf("%-12s", description)),
-		progressbar.OptionSetWidth(30),
-		progressbar.OptionShowCount(),
-		progressbar.OptionShowElapsedTimeOnFinish(),
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "=",
-			SaucerHead:    ">",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}),
-		progressbar.OptionEnableColorCodes(true),
-		progressbar.OptionSetPredictTime(true),
-		progressbar.OptionFullWidth(),
-	)
+// New returns a count-based progress bar for counting tables. A total <= 0
+// starts it as a spinner, which can be upgraded in place with SetTotal once
+// the real total is known (see ui.Bar).
+func New(total int, description string) *ui.Bar {
+	return ui.NewBar(total, description, "tables")
 }
 
-// SpinnerBar returns an indefinite spinner for use before the total count is
-// known.  It is safe to call Finish on it and replace it with a New bar once
-// the total becomes available.
-func SpinnerBar(description string) *progressbar.ProgressBar {
-	return progressbar.NewOptions(-1,
-		progressbar.OptionSetDescription(fmt.Sprintf("%-12s", description)),
-		progressbar.OptionSpinnerType(14),
-		progressbar.OptionEnableColorCodes(true),
-		progressbar.OptionSetWidth(30),
-		progressbar.OptionSetRenderBlankState(true),
-	)
+// SpinnerBar returns an indefinite progress indicator for use before the
+// total count is known. Call SetTotal on it once the total is available.
+func SpinnerBar(description string) *ui.Bar {
+	return ui.NewBar(-1, description, "tables")
 }

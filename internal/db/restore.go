@@ -19,8 +19,7 @@ import (
 	"dbtool/internal/progress"
 	"dbtool/internal/settings"
 	"dbtool/internal/types"
-
-	pb "github.com/schollz/progressbar/v3"
+	"dbtool/internal/ui"
 )
 
 // myloaderRestoreCompletedMarker is the message myloader logs unconditionally
@@ -187,14 +186,19 @@ func listDumpDatabases(dir string) []string {
 }
 
 func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
+	started := time.Now()
+	printRestoreHeader(cfg, dir, overwriteTables)
+
+	prep := ui.StartTask("Preparing")
 	lockDir, err := paths.DbtoolDir()
 	if err != nil {
-		fmt.Println("Restore lock failed:", err)
+		prep.Fail(fmt.Errorf("restore lock failed: %w", err))
 		os.Exit(1)
 	}
 	release, err := filelock.Acquire(lockDir, "restore:"+cfg.Host+":"+cfg.Port, false)
 	if err != nil {
-		fmt.Println("Restore blocked:", err)
+		prep.Fail(fmt.Errorf("restore blocked: %w", err))
+		ui.Hint("Another restore into this server is already running.")
 		os.Exit(1)
 	}
 	defer release()
@@ -224,15 +228,18 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 	myloaderPath, err := findExecutable("myloader")
 	if err != nil {
 		logger.Error("myloader not found in PATH or common directories")
-		fmt.Println("Error: myloader is not available. Please install myloader.")
+		prep.Fail(fmt.Errorf("myloader is not installed"))
+		ui.Hint("Install it with %s, or see https://github.com/mydumper/mydumper/releases", ui.Code("dbtool install"))
 		os.Exit(1)
 	}
 	myloaderVersion := detectMyloaderVersion(myloaderPath)
+	prep.Done(toolLabel("myloader", myloaderVersion))
 
 	// Re-run the same dump-portability patches before myloader runs, as a
 	// safety net for a dump that never went through them at dump time (one
 	// taken by an older dbtool version, or downloaded from S3/Telegram) —
 	// see PatchDumpDir for what it does and doesn't touch.
+	verify := ui.StartTask("Checking dump")
 	PatchDumpDir(dir)
 
 	// Safety net: warn before loading data if this dump shows the same
@@ -240,7 +247,13 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 	// Restoring from an already-taken dump (downloaded from S3, or simply
 	// dumped a while ago with an older mydumper) never went through that
 	// check, so it's worth re-running here before the data actually lands.
-	ReportValidationIssues(ValidateDump(dir))
+	issues := ValidateDump(dir)
+	if len(issues) > 0 {
+		verify.Warn(fmt.Sprintf("%s may have lost column data", ui.Plural(len(issues), "table", "tables")))
+	} else {
+		verify.Done("")
+	}
+	ReportValidationIssues(issues)
 
 	// Work around a still-open myloader race condition for ANSI-quoted
 	// (double-quote) dumps — see myloaderRaceWorkaroundFile.
@@ -287,18 +300,59 @@ func RunRestore(cfg types.Config, pass, dir string, overwriteTables bool) {
 		dbArgs := args
 		if dbName != "" {
 			dbArgs = append(append([]string{}, args...), "-s", dbName)
-			fmt.Printf("Restoring database %q (%d of %d)…\n", dbName, i+1, len(databases))
 			logger.Info("restoring database %q (%d of %d) for config %q", dbName, i+1, len(databases), cfg.Name)
 		}
 
 		if err := restoreOneDatabase(cfg, pass, myloaderPath, dbArgs, dir, dbName); err != nil {
 			logger.Error("restore failed for config %q: %v", cfg.Name, err)
-			fmt.Println("Restore FAILED:", err)
+			label := "Restore failed"
+			if dbName != "" {
+				label = fmt.Sprintf("Restore of %s failed (%d of %d)", dbName, i+1, len(databases))
+			}
+			ui.Error("%s: %v", label, err)
+			ui.Hint("myloader's full output is in the log — run %s", ui.Code("dbtool log --level debug"))
 			os.Exit(1)
 		}
 	}
 
 	logger.Info("restore completed for config %q", cfg.Name)
+	dbCount := len(databases)
+	if databases[0] == "" {
+		dbCount = 0
+	}
+	lines := []string{strings.TrimRight(ui.KeyValues(
+		ui.KV{Key: "Config", Value: cfg.Name},
+		ui.KV{Key: "From", Value: ui.ShortPath(dir)},
+		ui.KV{Key: "Databases", Value: func() string {
+			if dbCount == 0 {
+				return ""
+			}
+			return fmt.Sprint(dbCount)
+		}()},
+		ui.KV{Key: "Took", Value: ui.Duration(time.Since(started))},
+	), "\n")}
+	ui.Blank()
+	ui.PrintBox("Restore complete", ui.BadgeSuccess, lines...)
+}
+
+// printRestoreHeader prints the "◆ Restore · name" title and its target.
+func printRestoreHeader(cfg types.Config, dir string, overwrite bool) {
+	ui.Title("Restore · "+cfg.Name, "")
+	route := "direct"
+	if cfg.SSH {
+		route = "SSH tunnel via " + cfg.SSHUser + "@" + cfg.SSHHost
+	}
+	mode := "keep existing tables"
+	if overwrite {
+		mode = ui.Yellow("overwrite existing tables")
+	}
+	ui.PrintKeyValues(
+		ui.KV{Key: "From", Value: ui.ShortPath(dir)},
+		ui.KV{Key: "Target", Value: fmt.Sprintf("%s@%s:%s", cfg.User, cfg.Host, cfg.Port)},
+		ui.KV{Key: "Route", Value: route},
+		ui.KV{Key: "Mode", Value: mode},
+	)
+	ui.Blank()
 }
 
 // restoreOneDatabase runs myloader against dbArgs — already scoped to one
@@ -327,7 +381,7 @@ func restoreOneDatabase(cfg types.Config, pass, myloaderPath string, dbArgs []st
 
 		delay := restoreBackoff[attempt-1]
 		logger.Warn("restore failed for config %q because the destination briefly went read-only mid-restore; retrying in %s: %v", cfg.Name, delay, lastErr)
-		fmt.Printf("Warning: destination went read-only mid-restore. Retrying in %s…\n", delay)
+		ui.Warn("Destination went read-only mid-restore — retrying in %s (attempt %d of %d)", delay, attempt+1, maxAttempts)
 		if id, checkErr := checkDestinationServer(cfg, pass); checkErr == nil {
 			logger.Debug("destination check before retry for config %q: @@hostname=%s @@server_id=%s read_only=%s", cfg.Name, id.hostname, id.serverID, orNone(id.readOnlyVar))
 		}
@@ -360,42 +414,16 @@ func runMyloaderOnce(cfg types.Config, myloaderPath string, args []string, dir, 
 	// ---------------- progress tracking ----------------
 	// Count table files in the dump directory so we can show a real bar.
 	totalTables := countRestoredTables(dir, dbName)
-	label := "Restoring…"
+	label, doneLabel := "Restoring", "Restored"
 	if dbName != "" {
-		label = fmt.Sprintf("Restoring %s…", dbName)
+		label, doneLabel = "Restoring "+dbName, "Restored "+dbName
 	}
 
-	var (
-		barMu   sync.Mutex
-		realBar *pb.ProgressBar
-		spinner *pb.ProgressBar
-	)
+	var barMu sync.Mutex
 
-	done := make(chan struct{})
-
-	if totalTables > 0 {
-		realBar = progress.New(totalTables, label)
-	} else {
-		spinner = progress.SpinnerBar(label)
-	}
-
-	// Goroutine: animate the spinner or advance the real bar every 500 ms.
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				barMu.Lock()
-				if spinner != nil {
-					_ = spinner.Add(0)
-				}
-				barMu.Unlock()
-			case <-done:
-				return
-			}
-		}
-	}()
+	// A total of 0 starts the bar as a spinner (the bar animates itself);
+	// it is upgraded in place if myloader reports "[x/y]" below.
+	bar := progress.New(totalTables, label)
 
 	stdoutDone := make(chan struct{})
 	go func() {
@@ -434,9 +462,7 @@ func runMyloaderOnce(cfg types.Config, myloaderPath string, args []string, dir, 
 			if progress.ParseRestoringTable(line) {
 				barMu.Lock()
 				stderrCount++
-				if realBar != nil {
-					_ = realBar.Set(stderrCount)
-				}
+				_ = bar.Set(stderrCount)
 				barMu.Unlock()
 				continue
 			}
@@ -447,16 +473,11 @@ func runMyloaderOnce(cfg types.Config, myloaderPath string, args []string, dir, 
 			}
 
 			barMu.Lock()
-			if spinner != nil {
-				// Upgrade: replace the indefinite spinner with a real bar.
-				_ = spinner.Finish()
-				fmt.Println()
-				spinner = nil
-				realBar = progress.New(tot, label)
+			if bar.Total() <= 0 {
+				// Upgrade: turn the indefinite spinner into a real bar.
+				bar.SetTotal(tot)
 			}
-			if realBar != nil {
-				_ = realBar.Set(cur)
-			}
+			_ = bar.Set(cur)
 			barMu.Unlock()
 		}
 	}()
@@ -464,24 +485,27 @@ func runMyloaderOnce(cfg types.Config, myloaderPath string, args []string, dir, 
 	<-stdoutDone
 	<-stderrDone
 	waitErr := cmd.Wait()
-	close(done)
 
-	barMu.Lock()
-	if realBar != nil {
-		_ = realBar.Finish()
-	} else if spinner != nil {
-		_ = spinner.Finish()
+	restored := bar.Current()
+	if t := bar.Total(); t > restored {
+		restored = t
 	}
-	barMu.Unlock()
-	fmt.Println()
+	_ = bar.Finish()
 
+	tablesDetail := ""
+	if restored > 0 {
+		tablesDetail = ui.Plural(restored, "table", "tables")
+	}
 	if waitErr == nil {
+		bar.Done(doneLabel, tablesDetail)
 		return nil, false
 	}
 
 	if restoreCompleted.Load() && !errorsReported.Load() {
 		logger.Warn("myloader exited with a non-zero status for config %q, but it logged %q — likely a non-fatal MySQL warning incorrectly driving the exit code, the same class of bug as mydumper/mydumper#1300 on the restore side: %v", cfg.Name, myloaderRestoreCompletedMarker, waitErr)
-		fmt.Println("Warning: myloader reported a non-zero exit status, but the restore completed successfully (a known myloader quirk — see dbtool.log for details).")
+		bar.Done(doneLabel, tablesDetail)
+		ui.Warn("myloader reported a non-zero exit status, but the restore completed successfully")
+		ui.Hint("A known myloader quirk — see %s for details.", ui.Code("dbtool log"))
 		return nil, false
 	}
 

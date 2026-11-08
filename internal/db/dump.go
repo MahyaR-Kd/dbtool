@@ -24,8 +24,7 @@ import (
 	"dbtool/internal/settings"
 	"dbtool/internal/telegram"
 	"dbtool/internal/types"
-
-	pb "github.com/schollz/progressbar/v3"
+	"dbtool/internal/ui"
 )
 
 // isTableSchemaFile returns true when name is a mydumper table-level schema
@@ -229,14 +228,17 @@ func RunDump(cfg types.Config, pass string) string {
 	logger.Info("starting dump for config %q (host=%s port=%s user=%s)", cfg.Name, cfg.Host, cfg.Port, cfg.User)
 
 	s := settings.Load()
+	started := time.Now()
+	printDumpHeader(cfg, s)
 
 	cfg, cleanup := connection.ApplyTunnels(cfg, s)
 	defer cleanup()
 
 	// ---------------- output dir ----------------
+	prep := ui.StartTask("Preparing")
 	if err := os.MkdirAll(s.WorkDir, 0755); err != nil {
 		logger.Error("failed to create work directory %q: %v", s.WorkDir, err)
-		fmt.Println("Failed to create work directory:", err)
+		prep.Fail(fmt.Errorf("cannot create work directory: %w", err))
 		os.Exit(1)
 	}
 
@@ -247,12 +249,13 @@ func RunDump(cfg types.Config, pass string) string {
 
 	lockDir, err := paths.DbtoolDir()
 	if err != nil {
-		fmt.Println("Dump lock failed:", err)
+		prep.Fail(fmt.Errorf("dump lock failed: %w", err))
 		os.Exit(1)
 	}
 	release, err := filelock.Acquire(lockDir, "dump:"+s.WorkDir+":"+cfg.Name, false)
 	if err != nil {
-		fmt.Println("Dump blocked:", err)
+		prep.Fail(fmt.Errorf("dump blocked: %w", err))
+		ui.Hint("Another dump of this config is already running.")
 		os.Exit(1)
 	}
 	defer release()
@@ -260,12 +263,12 @@ func RunDump(cfg types.Config, pass string) string {
 	// naming convention, then atomically rename only after successful completion.
 	finalDir := outDir
 	if _, err := os.Lstat(finalDir); !os.IsNotExist(err) {
-		fmt.Println("Dump directory already exists or cannot be checked:", finalDir)
+		prep.Fail(fmt.Errorf("dump directory already exists or cannot be checked: %s", finalDir))
 		os.Exit(1)
 	}
 	outDir, err = os.MkdirTemp(s.WorkDir, ".dbtool-pending-")
 	if err != nil {
-		fmt.Println("Cannot create staging directory:", err)
+		prep.Fail(fmt.Errorf("cannot create staging directory: %w", err))
 		os.Exit(1)
 	}
 
@@ -275,11 +278,13 @@ func RunDump(cfg types.Config, pass string) string {
 	mydumperPath, err := findExecutable("mydumper")
 	if err != nil {
 		logger.Error("mydumper not found in PATH or common directories")
-		fmt.Println("Error: mydumper is not available. Please install mydumper.")
+		prep.Fail(fmt.Errorf("mydumper is not installed"))
+		ui.Hint("Install it with %s, or see https://github.com/mydumper/mydumper/releases", ui.Code("dbtool install"))
 		os.Exit(1)
 	}
 	logger.Debug("using mydumper at %s", mydumperPath)
 	mydumperVersion := detectMydumperVersion(mydumperPath)
+	prep.Done(toolLabel("mydumper", mydumperVersion))
 
 	// ---------------- mydumper ----------------
 	args := []string{"-h", cfg.Host, "-P", cfg.Port, "-u", cfg.User}
@@ -319,8 +324,7 @@ func RunDump(cfg types.Config, pass string) string {
 
 	if err := cmd.Start(); err != nil {
 		logger.Error("failed to start mydumper: %v", err)
-		fmt.Println("Failed:", err)
-		os.Exit(1)
+		ui.Fatal("Failed to start mydumper: %v", err)
 	}
 
 	// ---------------- progress tracking ----------------
@@ -330,18 +334,14 @@ func RunDump(cfg types.Config, pass string) string {
 
 	var (
 		barMu      sync.Mutex
-		realBar    *pb.ProgressBar
-		spinner    *pb.ProgressBar
-		lastBarVal int // highest value ever passed to realBar.Set; prevents backward jumps
+		lastBarVal int // highest value ever passed to bar.Set; prevents backward jumps
 	)
 
 	done := make(chan struct{})
 
-	if totalTables > 0 {
-		realBar = progress.New(totalTables, "Dumping…")
-	} else {
-		spinner = progress.SpinnerBar("Dumping…")
-	}
+	// A total of 0 (pre-count failed) starts the bar in spinner mode; it is
+	// switched to a real bar in place if mydumper reports "[x/y]" below.
+	bar := progress.New(totalTables, "Dumping "+cfg.Name)
 
 	// Goroutine: animate the spinner or update the real bar every 500 ms by
 	// counting table-schema files that mydumper has written to the output dir.
@@ -352,13 +352,11 @@ func RunDump(cfg types.Config, pass string) string {
 			select {
 			case <-ticker.C:
 				barMu.Lock()
-				if realBar != nil {
+				if bar.Total() > 0 {
 					if n := countDumpedTables(outDir); n > lastBarVal {
 						lastBarVal = n
-						_ = realBar.Set(n)
+						_ = bar.Set(n)
 					}
-				} else if spinner != nil {
-					_ = spinner.Add(0)
 				}
 				barMu.Unlock()
 			case <-done:
@@ -392,9 +390,9 @@ func RunDump(cfg types.Config, pass string) string {
 			if progress.ParseDumpingTable(line) {
 				barMu.Lock()
 				stderrCount++
-				if realBar != nil && stderrCount > lastBarVal {
+				if stderrCount > lastBarVal {
 					lastBarVal = stderrCount
-					_ = realBar.Set(stderrCount)
+					_ = bar.Set(stderrCount)
 				}
 				barMu.Unlock()
 				continue
@@ -406,16 +404,13 @@ func RunDump(cfg types.Config, pass string) string {
 			}
 
 			barMu.Lock()
-			if spinner != nil {
-				// Upgrade: replace the indefinite spinner with a real bar.
-				_ = spinner.Finish()
-				fmt.Println()
-				spinner = nil
-				realBar = progress.New(tot, "Dumping…")
+			if bar.Total() <= 0 {
+				// Upgrade: turn the indefinite spinner into a real bar.
+				bar.SetTotal(tot)
 			}
-			if realBar != nil && cur > lastBarVal {
+			if cur > lastBarVal {
 				lastBarVal = cur
-				_ = realBar.Set(cur)
+				_ = bar.Set(cur)
 			}
 			barMu.Unlock()
 		}
@@ -435,34 +430,35 @@ func RunDump(cfg types.Config, pass string) string {
 	err = cmd.Wait()
 	close(done)
 
-	barMu.Lock()
-	if realBar != nil {
-		_ = realBar.Finish()
-	} else if spinner != nil {
-		_ = spinner.Finish()
+	_ = bar.Finish()
+	dumpedTables := bar.Current()
+	if t := bar.Total(); t > dumpedTables {
+		dumpedTables = t
 	}
-	barMu.Unlock()
-	fmt.Println()
+	dumpElapsed := bar.Elapsed()
 
 	if err != nil {
 		if mydumperExitIsBenign(outDir, sawWarning.Load(), sawSevere.Load()) {
 			logger.Warn("mydumper exited with a non-zero status for config %q, but its metadata file confirms the dump completed — likely a non-fatal MySQL warning (e.g. insufficient privilege to read binlog position) incorrectly driving the exit code; see https://github.com/mydumper/mydumper/issues/1300: %v", cfg.Name, err)
-			fmt.Println("Warning: mydumper reported a non-zero exit status, but the dump completed successfully (a known mydumper quirk — see dbtool.log for details).")
+			ui.Warn("mydumper reported a non-zero exit status, but the dump completed successfully")
+			ui.Hint("A known mydumper quirk — see %s for details.", ui.Code("dbtool log"))
 		} else {
 			logger.Error("dump failed for config %q: %v", cfg.Name, err)
-			fmt.Println("Dump FAILED:", err)
+			ui.Error("Dump failed: %v", err)
+			ui.Hint("mydumper's full output is in the log — run %s", ui.Code("dbtool log --level debug"))
 			os.Exit(1)
 		}
 	}
 
 	if !mydumperMetadataComplete(outDir) {
-		fmt.Println("Dump FAILED: mydumper did not produce completed metadata")
-		os.Exit(1)
+		ui.Fatal("Dump failed: mydumper did not produce completed metadata")
 	}
+	ui.Success("Dumped %s  %s", ui.Plural(dumpedTables, "table", "tables"), ui.Muted(ui.Duration(dumpElapsed)))
 	logger.Info("dump completed for config %q: %s", cfg.Name, outDir)
 
+	verify := ui.StartTask("Verifying dump")
 	if err := backupstate.Begin(outDir); err != nil {
-		fmt.Println("Cannot mark pending dump:", err)
+		verify.Fail(fmt.Errorf("cannot mark pending dump: %w", err))
 		os.Exit(1)
 	}
 	// Patch known dump-portability issues before this dump is retained or
@@ -476,27 +472,38 @@ func RunDump(cfg types.Config, pass string) string {
 	// excluded. When that happens the real value is never captured at all,
 	// and restoring silently substitutes the column's DEFAULT instead. Warn
 	// loudly if this dump shows that pattern, without failing the dump.
-	ReportValidationIssues(ValidateDump(outDir))
+	issues := ValidateDump(outDir)
+	if len(issues) > 0 {
+		verify.Warn(fmt.Sprintf("%s may have lost column data", ui.Plural(len(issues), "table", "tables")))
+	} else {
+		verify.Done("")
+	}
+	ReportValidationIssues(issues)
 	if err := backupstate.Finish(outDir); err != nil {
-		fmt.Println("Cannot publish dump:", err)
-		os.Exit(1)
+		ui.Fatal("Cannot publish dump: %v", err)
 	}
 	if err := os.Rename(outDir, finalDir); err != nil {
-		fmt.Println("Cannot publish dump directory:", err)
-		os.Exit(1)
+		ui.Fatal("Cannot publish dump directory: %v", err)
 	}
 	outDir = finalDir
-	fmt.Println("Dump completed:", outDir)
+	dumpSize := ui.DirSize(outDir)
+	ui.Success("Saved  %s", ui.Muted(ui.ShortPath(outDir)+"  ("+ui.Bytes(dumpSize)+")"))
+	location := ui.ShortPath(outDir)
+	var warnings []string
+	if len(issues) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%s may have lost column data (see above)", ui.Plural(len(issues), "table", "tables")))
+	}
 
 	// ---------------- S3 upload ----------------
 	// The local copy is kept until after Telegram delivery below (which reads
 	// outDir from disk) and is only removed once both are done.
 	if s.S3Enabled() {
-		fmt.Println("Uploading dump to S3…")
+		upload := ui.StartTask("Uploading to S3")
 		logger.Info("uploading dump to S3 bucket %q prefix %q", s.S3.Bucket, s.S3.Prefix)
 		if err := s3store.UploadDir(s.S3, outDir); err != nil {
 			logger.Error("S3 upload failed: %v", err)
-			fmt.Println("S3 upload FAILED:", err)
+			upload.Fail(err)
+			ui.Hint("Check your S3 settings with %s", ui.Code("dbtool setting s3 test"))
 			os.Exit(1)
 		}
 		logger.Info("S3 upload completed for %s", outDir)
@@ -505,7 +512,8 @@ func RunDump(cfg types.Config, pass string) string {
 		if s.S3.Prefix != "" {
 			s3Path = strings.TrimSuffix(s.S3.Prefix, "/") + "/" + dumpDirName
 		}
-		fmt.Printf("S3 upload completed: s3://%s/%s/\n", s.S3.Bucket, s3Path)
+		location = fmt.Sprintf("s3://%s/%s/", s.S3.Bucket, s3Path)
+		upload.Done(location)
 	}
 
 	// Rotate old dump directories based on the configured retention period.
@@ -522,13 +530,14 @@ func RunDump(cfg types.Config, pass string) string {
 	// Delivery failures are logged and reported but never fail the dump — the
 	// local/S3 copy is already safe by this point.
 	if s.Telegram.Enabled() && !cfg.TelegramDisabled {
-		fmt.Println("Sending dump to Telegram…")
+		tg := ui.StartTask("Sending to Telegram")
 		if err := telegram.SendDump(s.Telegram, outDir); err != nil {
 			logger.Error("telegram delivery failed for %q: %v", outDir, err)
-			fmt.Println("Warning: failed to send dump to Telegram:", err)
+			tg.Warn(err.Error())
+			warnings = append(warnings, "Telegram delivery failed: "+err.Error())
 		} else {
 			logger.Info("telegram delivery completed for %s", outDir)
-			fmt.Println("Telegram delivery completed.")
+			tg.Done("")
 		}
 	}
 
@@ -537,9 +546,66 @@ func RunDump(cfg types.Config, pass string) string {
 		logger.Debug("removing local dump dir after S3 upload: %s", outDir)
 		if err := os.RemoveAll(outDir); err != nil {
 			logger.Error("failed to remove local dump dir %s after S3 upload: %v", outDir, err)
-			fmt.Printf("Warning: could not remove local dump dir %s: %v\n", outDir, err)
+			ui.Warn("Could not remove local dump dir %s: %v", outDir, err)
 		}
 	}
 
+	printDumpSummary(cfg, location, dumpedTables, dumpSize, time.Since(started), warnings)
 	return outDir
+}
+
+// printDumpHeader prints the "◆ Dump · name" title with where the dump comes
+// from and where it is going.
+func printDumpHeader(cfg types.Config, s settings.Settings) {
+	ui.Title("Dump · "+cfg.Name, "")
+	route := "direct"
+	if cfg.SSH {
+		route = "SSH tunnel via " + cfg.SSHUser + "@" + cfg.SSHHost
+	}
+	if s.Proxy.Enabled() {
+		route += " + SOCKS5 proxy"
+	}
+	dest := ui.ShortPath(s.WorkDir)
+	if s.S3Enabled() {
+		dest = "s3://" + s.S3.Bucket + "/" + strings.TrimSuffix(s.S3.Prefix, "/")
+	}
+	tg := ""
+	if s.Telegram.Enabled() && !cfg.TelegramDisabled {
+		tg = "yes"
+	}
+	ui.PrintKeyValues(
+		ui.KV{Key: "Source", Value: fmt.Sprintf("%s@%s:%s", cfg.User, cfg.Host, cfg.Port)},
+		ui.KV{Key: "Route", Value: route},
+		ui.KV{Key: "Destination", Value: dest},
+		ui.KV{Key: "Telegram", Value: tg},
+	)
+	ui.Blank()
+}
+
+// printDumpSummary prints the end-of-dump box.
+func printDumpSummary(cfg types.Config, location string, tables int, size int64, took time.Duration, warnings []string) {
+	kind, title := ui.BadgeSuccess, "Dump complete"
+	if len(warnings) > 0 {
+		kind, title = ui.BadgeWarn, "Dump complete with warnings"
+	}
+	lines := []string{strings.TrimRight(ui.KeyValues(
+		ui.KV{Key: "Config", Value: cfg.Name},
+		ui.KV{Key: "Location", Value: location},
+		ui.KV{Key: "Tables", Value: fmt.Sprint(tables)},
+		ui.KV{Key: "Size", Value: ui.Bytes(size)},
+		ui.KV{Key: "Took", Value: ui.Duration(took)},
+	), "\n")}
+	for _, w := range warnings {
+		lines = append(lines, ui.Yellow(ui.Icon(ui.IconWarn)+" "+w))
+	}
+	ui.Blank()
+	ui.PrintBox(title, kind, lines...)
+}
+
+// toolLabel renders "mydumper 0.16.9" for the Preparing stage.
+func toolLabel(name string, v toolVersion) string {
+	if v.OK {
+		return fmt.Sprintf("%s %d.%d.%d", name, v.Major, v.Minor, v.Patch)
+	}
+	return name
 }

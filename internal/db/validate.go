@@ -1,6 +1,7 @@
 package db
 
 import (
+	"dbtool/internal/ui"
 	"fmt"
 	"io"
 	"os"
@@ -123,20 +124,23 @@ func ReportValidationIssues(issues []ValidationIssue) {
 		return
 	}
 
-	fmt.Println()
-	fmt.Println("WARNING: possible data loss detected in this dump.")
-	fmt.Println("The following table(s) have columns in their schema that are missing from")
-	fmt.Println("the INSERT statements in their data file. Restoring from this dump will NOT")
-	fmt.Println("preserve the original values for these columns — MySQL will apply each")
-	fmt.Println("column's DEFAULT instead. This is a known mydumper issue on older versions")
-	fmt.Println("with MySQL 8's DEFAULT/ON UPDATE CURRENT_TIMESTAMP columns — consider")
-	fmt.Println("upgrading mydumper/myloader and taking a fresh dump.")
+	var lines []string
+	lines = append(lines,
+		"The following table(s) have columns in their schema that are missing from",
+		"the INSERT statements in their data file. Restoring from this dump will NOT",
+		"preserve the original values for these columns — MySQL will apply each",
+		"column's DEFAULT instead. This is a known mydumper issue on older versions",
+		"with MySQL 8's DEFAULT/ON UPDATE CURRENT_TIMESTAMP columns — consider",
+		"upgrading mydumper/myloader and taking a fresh dump.",
+		"",
+	)
 	for _, issue := range issues {
-		fmt.Printf("  - %s: %s\n", issue.Table, strings.Join(issue.Missing, ", "))
+		lines = append(lines, fmt.Sprintf("%s %s: %s", ui.Icon(ui.IconBullet), ui.Bold(issue.Table), strings.Join(issue.Missing, ", ")))
 		logger.Warn("dump validation: table %q is missing column(s) from its INSERT statement: %s",
 			issue.Table, strings.Join(issue.Missing, ", "))
 	}
-	fmt.Println()
+	ui.Blank()
+	ui.PrintBox("Possible data loss detected in this dump", ui.BadgeWarn, lines...)
 }
 
 // parseSchemaColumns extracts the table name, every column name declared in

@@ -13,7 +13,9 @@ A command-line tool for MySQL database backup and restore with SSH tunnelling su
 - **Archive encryption** — optionally encrypt dumps sent to S3/Telegram with a password, so a leaked bucket or chat doesn't expose the data itself
 - **Dump validation safety net** — flags a known class of `mydumper` bug where a column's real value never makes it into the dump at all
 - **Encrypted credentials** — every password/key/token dbtool stores is encrypted at rest, never in plaintext
-- **Arrow-key picker** for every "pick one from a list" prompt, with automatic fallback to a plain numbered list for scripts
+- **Clean terminal UI**: built-in type-to-filter pickers, validated and grouped forms with a review step, live progress bars with ETA, per-stage status lines and summary boxes. No external picker binary needed, and everything falls back to plain text for scripts
+- **Interactive dashboard** (`dbtool ui`): browse configs, jobs, settings and logs, and run dump / restore / add / edit / delete from one screen
+- **Script- and accessibility-friendly output**: colors turn off automatically when piped, honor `NO_COLOR` / `--no-color`, and ASCII icons are available via `DBTOOL_ASCII=1`
 - **Configurable output directory** for dump files
 - **Shell completion** for bash, zsh, and fish (installed automatically)
 
@@ -75,19 +77,42 @@ go install github.com/MahyaR-Kd/dbtool@latest
 
 ## Usage
 
+Run `dbtool` with no arguments for a short status and the most common
+commands, or `dbtool --help` for every command grouped by purpose.
+
 Every "pick one from a list" prompt (selecting a config, a job, a dump
-directory, which schemas/tables to include or ignore, ...) opens an
-[fzf](https://github.com/junegunn/fzf) picker: arrow keys (or type to
-fuzzy-filter) to navigate, Tab to toggle a selection where multiple picks
-are allowed, Enter to confirm, Esc to cancel. This requires the real `fzf`
-binary on your `PATH` (`brew install fzf` / `apt install fzf` / etc.) —
-dbtool drives it with `--height` so it renders inline, sized to the list,
-instead of taking over the whole terminal the way a full-screen picker
-would. When `fzf` isn't installed, or stdin isn't an interactive terminal
-(piping input from a script), prompts automatically fall back to a compact
-numbered list — type the number (or, for a multi-select prompt,
-comma-separated numbers) and press Enter — so dbtool works either way and
-scripted/automated use is unaffected.
+directory, which schemas/tables to include or ignore, ...) opens a built-in
+picker that renders inline, sized to the list: `↑`/`↓` to move, `/` to
+filter by typing, `space` to toggle where multiple picks are allowed,
+`enter` to confirm, `ctrl+c` to cancel. Forms (`config add/edit`,
+`job add/edit`, ...) are grouped into sections, validate input as you type
+(ports, retention days, cron schedules with a "next run" preview), and show
+a review box before anything is saved. Once answered, each prompt leaves a
+`✔ Label  answer` line in your scrollback.
+
+When stdin isn't an interactive terminal (piping input from a script),
+prompts automatically fall back to a compact numbered list — type the
+number (or, for a multi-select prompt, comma-separated numbers) and press
+Enter — and plain `(y/N)` / `Label [current]:` lines, so scripted and
+automated use is unaffected. Colors and animation also turn off when output
+is piped; see [Colors, icons and scripting](docs/TUI.md#colors-icons-and-scripting).
+
+The full tour of the interface — icons, keys, progress output, list views
+and the dashboard — is in **[docs/TUI.md](docs/TUI.md)**.
+
+### Dashboard
+
+```bash
+dbtool ui        # or: dbtool dashboard
+```
+
+A full-screen view with four tabs — **Configs**, **Jobs** (with each job's
+next run time), **Settings** and **Logs** (live, colored by level). From the
+Configs tab press `d` to dump, `r` to restore, `a`/`e`/`c`/`x` to add, edit,
+duplicate or delete; `1`–`4` or `tab` switch tabs and `q` quits. Each action
+runs the regular dbtool command in the same terminal (with its usual
+prompts and progress output), then returns to the dashboard. See
+[docs/TUI.md](docs/TUI.md#the-dashboard-dbtool-ui) for all keys.
 
 ### Manage connection configs
 
@@ -453,8 +478,17 @@ Every dump/restore logs which `mydumper`/`myloader` build actually ran it (`usin
 ### Other commands
 
 ```bash
+# Welcome screen: what's configured + the most common commands
+dbtool
+
 # Show the current version
 dbtool --version
+
+# Overview of every setting (secrets are never shown)
+dbtool setting
+
+# Disable colors for one run (or export NO_COLOR=1 for all runs)
+dbtool config list --no-color
 
 # Decrypt an archive encrypted with the S3/Telegram encryption password
 # (S3 restores decrypt automatically; this is for a Telegram delivery
@@ -557,9 +591,11 @@ credential encryption, and a safety-net validation pass on the output.
 
 Built on [Cobra](https://github.com/spf13/cobra). Each file registers one
 command (or a small related group) via `init()`. Most commands support both
-an interactive flow (prompts / the arrow-key picker) and a fully-flagged
+an interactive flow (prompts / the built-in picker) and a fully-flagged
 non-interactive flow for scripting — the same command handles both,
-branching on whether any flags were set.
+branching on whether any flags were set. [cmd/help.go](cmd/help.go) holds
+the grouped, colored help template and the welcome screen; all output goes
+through `internal/ui` (see [docs/ui-development.md](docs/ui-development.md)).
 
 One structural quirk worth knowing: [cmd/root.go](cmd/root.go) computes
 `installedInPath` — whether the currently running binary is the one
@@ -585,8 +621,10 @@ preventing accidental use of an unmanaged copy against real data.
 | `credvault` | A second, separate encryption scheme gated by a user-chosen master password — protects only the optional DB password saved on a connection config, since that's only ever needed for a dump/restore a human runs directly |
 | `archivecrypt` | A third, independent encryption scheme (AES-256-GCM over chunked streams, key derived via Argon2id) — protects the dump *contents* themselves when sent to S3/Telegram, using a password the operator sets and remembers |
 | `secureinput` | Masked (`*`-echoing) password prompts, with an env-var/flag resolution cascade and a plain-line fallback when stdin isn't a terminal |
-| `interactivelist` | Drives the real `fzf` binary for the arrow-key/fuzzy picker, with a plain numbered-list fallback when `fzf` is missing or stdin isn't a terminal |
-| `progress` | Parses `mydumper`/`myloader`'s verbose stderr output to drive a real progress bar instead of a spinner |
+| `ui` | The single place output is styled: palette, icons, status messages (stdout vs stderr), titles/sections/tables/boxes, live progress bars and stage spinners, and the color/ASCII rules (`NO_COLOR`, `--no-color`, `DBTOOL_ASCII`) — see [docs/ui-development.md](docs/ui-development.md) |
+| `interactivelist` | Every interactive prompt — pickers with type-to-filter, confirms, validated text inputs — built on [huh](https://github.com/charmbracelet/huh), with plain line-based fallbacks when stdin/stdout isn't a terminal |
+| `progress` | Parses `mydumper`/`myloader`'s verbose stderr output to drive a real progress bar (a `ui.Bar`) instead of a spinner |
+| `dashboard` | The optional full-screen `dbtool ui` app ([Bubble Tea](https://github.com/charmbracelet/bubbletea)); its actions run the regular CLI commands rather than reimplementing them |
 | `deps` | Detects missing `mydumper`/`myloader`/`mysql` and offers to install them via the OS package manager |
 | `logger` | Leveled file logging to `dbtool.log` |
 | `paths` | Resolves and creates `~/.dbtool/` |
@@ -697,6 +735,7 @@ instead:
 
 - `secureinput`/`credvault` tests swap in a canned password-reader function in place of a real terminal read.
 - Tests that touch `~/.dbtool` (`secret`, `credvault`, `db`'s tool-version logging) redirect `HOME`/`USERPROFILE` to a `t.TempDir()` so they never touch the real directory.
+- UI code is tested without a terminal: `internal/ui` tests capture output with colors off (and assert no ANSI escapes leak), prompt logic is tested through the line-based fallbacks, and the `dbtool ui` dashboard is driven by sending key/resize messages to its model and asserting on the rendered view (`DASHBOARD_DUMP=1 go test ./internal/dashboard -run TestView -v` prints the screens).
 - [internal/db/validate_test.go](internal/db/validate_test.go) and [dump_regex_test.go](internal/db/dump_regex_test.go) replay real bug reports — a literal schema and `INSERT` statement from an actual `mydumper` issue — as regression tests, rather than synthetic examples.
 
 ## License

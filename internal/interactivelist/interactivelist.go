@@ -323,12 +323,22 @@ func NonNegativeInt(s string) error {
 func runField(field huh.Field) error {
 	form := huh.NewForm(huh.NewGroup(field)).
 		WithTheme(Theme()).
-		WithShowHelp(true)
+		WithShowHelp(true).
+		WithWidth(formWidth(ui.Width()))
 	err := form.Run()
 	if errors.Is(err, huh.ErrUserAborted) {
 		return ErrCanceled
 	}
 	return err
+}
+
+// formWidth keeps prompts narrower than the terminal. huh pads every line
+// to the form width, so a full-width form wraps as soon as the terminal
+// draws a glyph like "❯" or "┃" two columns wide (macOS Terminal does for
+// East Asian ambiguous-width characters). Each redraw then lands a row off
+// and leaves duplicate lines behind.
+func formWidth(termWidth int) int {
+	return max(20, min(termWidth-4, 80))
 }
 
 // abort handles Ctrl+C on a prompt that has no way to return an error

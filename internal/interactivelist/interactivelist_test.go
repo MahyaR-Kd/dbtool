@@ -172,3 +172,11 @@ func TestSelectMulti_NoOptions(t *testing.T) {
 		t.Errorf("got %v, want nil", got)
 	}
 }
+
+func TestFormWidthLeavesSlack(t *testing.T) {
+	for term, want := range map[int]int{202: 80, 80: 76, 40: 36, 10: 20} {
+		if got := formWidth(term); got != want {
+			t.Errorf("formWidth(%d) = %d, want %d", term, got, want)
+		}
+	}
+}

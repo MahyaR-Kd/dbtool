@@ -72,6 +72,10 @@ var jobEditCmd = &cobra.Command{
 				ui.Error("Job name, type, and schedule cannot be empty.")
 				return
 			}
+			if err := job.ValidateSchedule(updated.Schedule); err != nil {
+				ui.Error("Invalid schedule %q: %v", updated.Schedule, err)
+				return
+			}
 			switch updated.Type {
 			case "dump":
 				if updated.SrcConfigName == "" || updated.SrcPassword == "" {

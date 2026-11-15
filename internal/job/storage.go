@@ -119,12 +119,14 @@ func Save(j Config) error {
 	return atomicfile.Write(path, append(data, []byte(line)...), 0600)
 }
 
+// Overwrite rewrites the whole jobs file. It does not re-validate
+// schedules: jobs saved by older versions may hold one the current parser
+// rejects, and refusing to rewrite them would block the credential
+// migration and every edit or delete of any other job. New and edited
+// schedules are validated where they are entered (Save, job edit).
 func Overwrite(jobs []Config) error {
 	var data strings.Builder
 	for _, j := range jobs {
-		if err := ValidateSchedule(j.Schedule); err != nil {
-			return err
-		}
 		line, err := encodeLine(j)
 		if err != nil {
 			return err

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
 )
 
 // toolVersion is a parsed mydumper/myloader --version result. OK is false

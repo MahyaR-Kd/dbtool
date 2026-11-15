@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
 
 	_ "github.com/go-sql-driver/mysql"
 )

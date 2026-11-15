@@ -3,8 +3,8 @@ package cmd
 import (
 	"time"
 
-	"dbtool/internal/job"
-	"dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/job"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
 
 	"github.com/spf13/cobra"
 )

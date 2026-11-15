@@ -5,8 +5,8 @@ The user-facing description of the interface is in [TUI.md](TUI.md).
 
 ## The rule
 
-**Don't call `fmt.Print*` for user-facing output.** Use `dbtool/internal/ui`
-for output and `dbtool/internal/interactivelist` for prompts. This keeps the
+**Don't call `fmt.Print*` for user-facing output.** Use `github.com/MahyaR-Kd/dbtool/internal/ui`
+for output and `github.com/MahyaR-Kd/dbtool/internal/interactivelist` for prompts. This keeps the
 look consistent, routes errors to stderr, honors `--no-color` / `NO_COLOR`,
 and keeps live progress bars from being garbled by other prints.
 

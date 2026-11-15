@@ -2,8 +2,8 @@ package db
 
 import (
 	"database/sql"
-	"dbtool/internal/backupstate"
 	"fmt"
+	"github.com/MahyaR-Kd/dbtool/internal/backupstate"
 	"os"
 	"path/filepath"
 	"strings"

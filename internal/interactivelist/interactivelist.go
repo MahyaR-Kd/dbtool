@@ -25,8 +25,8 @@ import (
 	"strconv"
 	"strings"
 
-	"dbtool/internal/secureinput"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/secureinput"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/charmbracelet/huh"
 )

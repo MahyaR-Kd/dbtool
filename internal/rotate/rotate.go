@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"dbtool/internal/logger"
-	"dbtool/internal/s3store"
-	"dbtool/internal/settings"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/s3store"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 // dumpTimeLayout matches the timestamp suffix used in dump directory names

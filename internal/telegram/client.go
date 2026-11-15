@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	"dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
 )
 
 // apiBase is a var (not a const) so tests can point it at an httptest

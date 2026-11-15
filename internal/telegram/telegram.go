@@ -7,10 +7,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"dbtool/internal/archivecrypt"
-	"dbtool/internal/logger"
-	"dbtool/internal/settings"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/archivecrypt"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 // SendTestMessage sends a short text message to cfg.ChatID to verify that the

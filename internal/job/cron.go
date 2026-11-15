@@ -8,14 +8,14 @@ import (
 	"sync"
 	"time"
 
-	"dbtool/internal/config"
-	"dbtool/internal/db"
-	"dbtool/internal/filelock"
-	"dbtool/internal/logger"
-	"dbtool/internal/paths"
-	"dbtool/internal/s3store"
-	"dbtool/internal/settings"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/config"
+	"github.com/MahyaR-Kd/dbtool/internal/db"
+	"github.com/MahyaR-Kd/dbtool/internal/filelock"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/paths"
+	"github.com/MahyaR-Kd/dbtool/internal/s3store"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 // cronField supports lists, ranges, and positive steps with bounded values.

@@ -1,8 +1,8 @@
 package db
 
 import (
-	"dbtool/internal/ui"
 	"fmt"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
 )
 
 // ValidationIssue reports a table whose data file's INSERT statement is

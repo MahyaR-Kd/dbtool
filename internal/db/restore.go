@@ -12,14 +12,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"dbtool/internal/connection"
-	"dbtool/internal/filelock"
-	"dbtool/internal/logger"
-	"dbtool/internal/paths"
-	"dbtool/internal/progress"
-	"dbtool/internal/settings"
-	"dbtool/internal/types"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/connection"
+	"github.com/MahyaR-Kd/dbtool/internal/filelock"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/paths"
+	"github.com/MahyaR-Kd/dbtool/internal/progress"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 // myloaderRestoreCompletedMarker is the message myloader logs unconditionally

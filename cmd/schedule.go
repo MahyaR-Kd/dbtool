@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"dbtool/internal/logger"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

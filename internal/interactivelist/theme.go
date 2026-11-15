@@ -1,7 +1,7 @@
 package interactivelist
 
 import (
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"

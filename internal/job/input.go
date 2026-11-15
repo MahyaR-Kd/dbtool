@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/secureinput"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/secureinput"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 // jobTypes lists every valid job Type value, in the order offered by the

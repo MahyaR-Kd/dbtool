@@ -1,12 +1,12 @@
 package connection
 
 import (
-	"dbtool/internal/logger"
-	"dbtool/internal/proxy"
-	"dbtool/internal/settings"
-	"dbtool/internal/ssh"
-	"dbtool/internal/types"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/proxy"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/ssh"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 // ApplyTunnels inspects the global settings and the config to determine whether

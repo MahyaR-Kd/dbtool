@@ -1,10 +1,10 @@
 package cmd
 
 import (
-	"dbtool/internal/config"
-	"dbtool/internal/credvault"
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/config"
+	"github.com/MahyaR-Kd/dbtool/internal/credvault"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

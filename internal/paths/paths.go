@@ -1,8 +1,8 @@
 package paths
 
 import (
-	"dbtool/internal/atomicfile"
-	"dbtool/internal/filelock"
+	"github.com/MahyaR-Kd/dbtool/internal/atomicfile"
+	"github.com/MahyaR-Kd/dbtool/internal/filelock"
 	"os"
 	"path/filepath"
 )

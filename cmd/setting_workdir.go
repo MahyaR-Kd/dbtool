@@ -5,9 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"dbtool/internal/logger"
-	"dbtool/internal/settings"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

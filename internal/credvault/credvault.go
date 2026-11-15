@@ -35,11 +35,11 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"dbtool/internal/atomicfile"
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/paths"
-	"dbtool/internal/secureinput"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/atomicfile"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/paths"
+	"github.com/MahyaR-Kd/dbtool/internal/secureinput"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 const magicPrefix = "cred:v1:"

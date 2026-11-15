@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"dbtool/internal/paths"
+	"github.com/MahyaR-Kd/dbtool/internal/paths"
 )
 
 // Level represents the severity of a log entry.

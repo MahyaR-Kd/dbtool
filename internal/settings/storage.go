@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"dbtool/internal/atomicfile"
-	"dbtool/internal/logger"
-	"dbtool/internal/paths"
-	"dbtool/internal/secret"
+	"github.com/MahyaR-Kd/dbtool/internal/atomicfile"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/paths"
+	"github.com/MahyaR-Kd/dbtool/internal/secret"
 )
 
 func settingsFilePath() string {

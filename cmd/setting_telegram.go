@@ -6,12 +6,12 @@ import (
 	"strconv"
 	"strings"
 
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/logger"
-	"dbtool/internal/secureinput"
-	"dbtool/internal/settings"
-	"dbtool/internal/telegram"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/secureinput"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/telegram"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
 )
 
 // removedSQLModeValues lists sql_mode values a newer MySQL server now

@@ -1,6 +1,6 @@
 package main
 
-import "dbtool/cmd"
+import "github.com/MahyaR-Kd/dbtool/cmd"
 
 func main() {
 	cmd.Execute()

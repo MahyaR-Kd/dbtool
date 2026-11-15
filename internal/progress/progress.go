@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strconv"
 
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 // tableProgressRe matches "[current/total]" as emitted by some versions of

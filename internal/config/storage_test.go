@@ -2,7 +2,7 @@ package config
 
 import (
 	"bytes"
-	"dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
 	"os"
 	"path/filepath"
 	"testing"

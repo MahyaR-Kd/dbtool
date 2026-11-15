@@ -9,13 +9,13 @@ import (
 	"strconv"
 	"strings"
 
-	"dbtool/internal/connection"
-	"dbtool/internal/credvault"
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/secureinput"
-	"dbtool/internal/settings"
-	"dbtool/internal/types"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/connection"
+	"github.com/MahyaR-Kd/dbtool/internal/credvault"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/secureinput"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 func AskInteractive() types.Config {

@@ -4,10 +4,10 @@ import (
 	"strconv"
 	"strings"
 
-	"dbtool/internal/config"
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/types"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/config"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

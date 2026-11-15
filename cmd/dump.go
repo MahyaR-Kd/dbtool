@@ -1,10 +1,10 @@
 package cmd
 
 import (
-	"dbtool/internal/config"
-	"dbtool/internal/db"
-	"dbtool/internal/logger"
-	"dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/config"
+	"github.com/MahyaR-Kd/dbtool/internal/db"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
 
 	"github.com/spf13/cobra"
 )

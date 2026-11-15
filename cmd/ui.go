@@ -6,8 +6,8 @@ import (
 	"os"
 	"os/exec"
 
-	"dbtool/internal/dashboard"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/dashboard"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

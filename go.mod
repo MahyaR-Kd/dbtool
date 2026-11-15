@@ -1,4 +1,4 @@
-module dbtool
+module github.com/MahyaR-Kd/dbtool
 
 go 1.24.0
 

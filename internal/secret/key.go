@@ -22,9 +22,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"dbtool/internal/atomicfile"
-	"dbtool/internal/filelock"
-	"dbtool/internal/paths"
+	"github.com/MahyaR-Kd/dbtool/internal/atomicfile"
+	"github.com/MahyaR-Kd/dbtool/internal/filelock"
+	"github.com/MahyaR-Kd/dbtool/internal/paths"
 )
 
 // keySize is 32 bytes for AES-256.

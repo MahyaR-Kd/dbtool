@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/job"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/job"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

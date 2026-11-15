@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"dbtool/internal/atomicfile"
-	"dbtool/internal/filelock"
-	"dbtool/internal/logger"
-	"dbtool/internal/paths"
-	"dbtool/internal/secret"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/atomicfile"
+	"github.com/MahyaR-Kd/dbtool/internal/filelock"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/paths"
+	"github.com/MahyaR-Kd/dbtool/internal/secret"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 func jobFilePath() string {

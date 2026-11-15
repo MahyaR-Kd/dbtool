@@ -19,12 +19,12 @@ import (
 	"strings"
 	"time"
 
-	"dbtool/internal/config"
-	"dbtool/internal/job"
-	"dbtool/internal/logger"
-	"dbtool/internal/settings"
-	"dbtool/internal/types"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/config"
+	"github.com/MahyaR-Kd/dbtool/internal/job"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"

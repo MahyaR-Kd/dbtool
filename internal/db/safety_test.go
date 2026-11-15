@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"dbtool/internal/backupstate"
-	"dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/backupstate"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
 )
 
 func TestSQLModePatchPreservesRowsAndComments(t *testing.T) {

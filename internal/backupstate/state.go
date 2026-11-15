@@ -2,7 +2,7 @@
 package backupstate
 
 import (
-	"dbtool/internal/atomicfile"
+	"github.com/MahyaR-Kd/dbtool/internal/atomicfile"
 	"os"
 	"path/filepath"
 )

@@ -8,13 +8,13 @@ import (
 	"strconv"
 	"strings"
 
-	"dbtool/internal/atomicfile"
-	"dbtool/internal/credvault"
-	"dbtool/internal/filelock"
-	"dbtool/internal/logger"
-	"dbtool/internal/paths"
-	"dbtool/internal/types"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/atomicfile"
+	"github.com/MahyaR-Kd/dbtool/internal/credvault"
+	"github.com/MahyaR-Kd/dbtool/internal/filelock"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/paths"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 )
 
 func configFilePath() string {

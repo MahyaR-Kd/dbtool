@@ -6,12 +6,12 @@ import (
 	"os"
 	"strings"
 
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/logger"
-	"dbtool/internal/s3store"
-	"dbtool/internal/secureinput"
-	"dbtool/internal/settings"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/s3store"
+	"github.com/MahyaR-Kd/dbtool/internal/secureinput"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

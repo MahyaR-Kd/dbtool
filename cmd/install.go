@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"

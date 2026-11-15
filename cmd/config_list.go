@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"dbtool/internal/config"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/config"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

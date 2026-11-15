@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"dbtool/internal/backupstate"
-	"dbtool/internal/settings"
+	"github.com/MahyaR-Kd/dbtool/internal/backupstate"
+	"github.com/MahyaR-Kd/dbtool/internal/settings"
 )
 
 func TestSafeObjectPath(t *testing.T) {

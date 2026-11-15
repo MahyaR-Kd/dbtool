@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
 	"testing"
 )
 

@@ -13,7 +13,7 @@ jobs:
     name: Build Windows binaries
     runs-on: ubuntu-latest
     env:
-      LDFLAGS: -s -w -X dbtool/cmd.Version=${{ github.ref_name }}
+      LDFLAGS: -s -w -X github.com/MahyaR-Kd/dbtool/cmd.Version=${{ github.ref_name }}
 
     steps:
       - name: Checkout
@@ -43,7 +43,7 @@ jobs:
     name: Build Linux binaries
     runs-on: ubuntu-latest
     env:
-      LDFLAGS: -s -w -X dbtool/cmd.Version=${{ github.ref_name }}
+      LDFLAGS: -s -w -X github.com/MahyaR-Kd/dbtool/cmd.Version=${{ github.ref_name }}
 
     steps:
       - name: Checkout
@@ -72,7 +72,7 @@ jobs:
     name: Build macOS binary
     runs-on: macos-latest
     env:
-      LDFLAGS: -s -w -X dbtool/cmd.Version=${{ github.ref_name }}
+      LDFLAGS: -s -w -X github.com/MahyaR-Kd/dbtool/cmd.Version=${{ github.ref_name }}
 
     steps:
       - name: Checkout

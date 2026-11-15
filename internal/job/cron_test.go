@@ -1,8 +1,8 @@
 package job
 
 import (
-	"dbtool/internal/filelock"
-	"dbtool/internal/paths"
+	"github.com/MahyaR-Kd/dbtool/internal/filelock"
+	"github.com/MahyaR-Kd/dbtool/internal/paths"
 	"testing"
 	"time"
 )

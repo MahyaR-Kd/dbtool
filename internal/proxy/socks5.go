@@ -9,7 +9,7 @@ import (
 	"net"
 	"strconv"
 
-	"dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
 )
 
 // dial establishes a SOCKS5 connection through the proxy to the target.

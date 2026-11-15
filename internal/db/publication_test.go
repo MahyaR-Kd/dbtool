@@ -1,8 +1,8 @@
 package db
 
 import (
-	"dbtool/internal/backupstate"
-	"dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/backupstate"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
 	"os"
 	"os/exec"
 	"path/filepath"

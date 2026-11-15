@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"dbtool/internal/job"
-	"dbtool/internal/types"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/job"
+	"github.com/MahyaR-Kd/dbtool/internal/types"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
 )

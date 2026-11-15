@@ -3,8 +3,8 @@ package cmd
 import (
 	"os"
 
-	"dbtool/internal/db"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/db"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

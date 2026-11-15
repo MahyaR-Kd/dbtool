@@ -1,10 +1,10 @@
 package deps
 
 import (
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/logger"
-	"dbtool/internal/ui"
 	"fmt"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/logger"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 	"os"
 	"os/exec"
 	"runtime"

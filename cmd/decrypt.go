@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"dbtool/internal/archivecrypt"
-	"dbtool/internal/interactivelist"
-	"dbtool/internal/secureinput"
-	"dbtool/internal/ui"
+	"github.com/MahyaR-Kd/dbtool/internal/archivecrypt"
+	"github.com/MahyaR-Kd/dbtool/internal/interactivelist"
+	"github.com/MahyaR-Kd/dbtool/internal/secureinput"
+	"github.com/MahyaR-Kd/dbtool/internal/ui"
 
 	"github.com/spf13/cobra"
 )

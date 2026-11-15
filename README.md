@@ -2,6 +2,8 @@
 
 A command-line tool for MySQL database backup and restore with SSH tunnelling support, scheduled jobs, and optional S3 storage.
 
+![dbtool dashboard](docs/images/dashboard.png)
+
 ## Features
 
 - **Dump & restore** MySQL databases using [mydumper](https://github.com/mydumper/mydumper) / [myloader](https://github.com/mydumper/mydumper), with automatic compatibility handling across `mydumper` 0.x and 1.x's CLI differences
@@ -90,6 +92,14 @@ filter by typing, `space` to toggle where multiple picks are allowed,
 a review box before anything is saved. Once answered, each prompt leaves a
 `✔ Label  answer` line in your scrollback.
 
+![Welcome screen shown by bare dbtool](docs/images/welcome.png)
+
+![Built-in picker](docs/images/picker.png)
+
+![Grouped config form](docs/images/config-form.png)
+
+![config list and job list tables](docs/images/lists.png)
+
 When stdin isn't an interactive terminal (piping input from a script),
 prompts automatically fall back to a compact numbered list — type the
 number (or, for a multi-select prompt, comma-separated numbers) and press
@@ -113,6 +123,8 @@ duplicate or delete; `1`–`4` or `tab` switch tabs and `q` quits. Each action
 runs the regular dbtool command in the same terminal (with its usual
 prompts and progress output), then returns to the dashboard. See
 [docs/TUI.md](docs/TUI.md#the-dashboard-dbtool-ui) for all keys.
+
+![Dashboard Jobs tab](docs/images/dashboard-jobs.png)
 
 ### Manage connection configs
 
